@@ -43,30 +43,98 @@ QWidget#MicrophoneSettingsWorkspace QSpinBox, QWidget#MicrophoneSettingsWorkspac
     background: {control_bg}; border: 1px solid {panel_border}; border-radius: 8px;
     color: {text}; padding: 5px 8px; min-height: 24px;
 }
-QWidget#VoiceoverSettingsWorkspace, QWidget#VoiceoverSettingsWorkspace QWidget {
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace, QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QWidget {
     font-family: "Segoe UI"; letter-spacing: 0px;
 }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QFrame#VoiceCard {
+    background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 14px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel { background: transparent; border: none; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceTitle { font-size: 23px; font-weight: 700; color: {text}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceSettingTitle { font-size: 13px; font-weight: 600; color: {text}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceCardTitle { font-size: 16px; font-weight: 600; color: {text}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceDescription { font-size: 12px; font-weight: 400; color: {muted}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceCardIcon { background: {chip_hover}; border-radius: 12px; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QFrame#VoiceStatus {
+    background: {control_bg}; border: 1px solid {panel_border}; border-radius: 9px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceStatusText {
+    font-size: 12px; font-weight: 500;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QFrame#VoiceMethodSelector {
+    background: {control_bg}; border: 1px solid {panel_border}; border-radius: 11px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoiceMethodButton {
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    color: {muted}; padding: 0px 14px; min-height: 36px; max-height: 36px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoiceMethodButton:hover { background: {chip_hover}; color: {text}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoiceMethodButton:checked {
+    background: {accent}; border-color: {accent_border}; color: #ffffff;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLineEdit,
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QComboBox,
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QDoubleSpinBox {
+    background: {control_bg}; color: {text}; border: 1px solid {panel_border};
+    border-radius: 9px; padding: 0px 10px; min-height: 36px; max-height: 36px; min-width: 0px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton {
+    background: {chip_bg}; color: {text}; border: 1px solid {panel_border};
+    border-radius: 9px; padding: 0px 12px; min-height: 36px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton:hover { border-color: {accent_border}; background: {chip_hover}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoiceModelSettingsButton { padding: 0px; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceModelStatusChip {
+    padding: 8px 10px; border-radius: 8px; background: {control_bg}; color: {muted};
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceModelStatusChip[state="green"] { color: {success}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceModelStatusChip[state="red"] { color: {danger}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceModelStatusChip[state="orange"] { color: #e4ad68; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoiceModelStatusChip[state="loading"] { color: {accent}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QLabel#VoicePreviewStatus {
+    padding: 10px; background: {control_bg}; border: 1px solid {panel_border}; border-radius: 9px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QWidget#SettingRow { background: transparent; border: none; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoicePrimaryAction,
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#RemoteVoicePreview {
+    background: {accent}; border: 1px solid {accent_border}; color: #ffffff;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoicePrimaryAction:hover,
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#RemoteVoicePreview:hover { background: {accent_hover}; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QSlider::groove:horizontal {
+    height: 5px; border: none; border-radius: 2px; background: {panel_border};
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QSlider::sub-page:horizontal { background: {accent}; border-radius: 2px; }
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QSlider::handle:horizontal {
+    background: {accent}; width: 18px; height: 18px; margin: -7px 0px; border: 1px solid {accent_border}; border-radius: 9px;
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#VoicePrimaryAction:disabled,
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPushButton#RemoteVoicePreview:disabled {
+    background: {btn_disabled_bg}; color: {btn_disabled_fg}; border-color: {panel_border};
+}
+QWidget#SettingsPageRoot QWidget#VoiceoverSettingsWorkspace QPlainTextEdit,
 QWidget#RemoteVoiceWorkspace QPlainTextEdit {
     background: {control_bg}; color: {text}; border: 1px solid {panel_border};
     border-radius: 8px; padding: 8px;
 }
+QWidget#VoiceoverSettingsWorkspace QLabel#RemoteVoiceHint,
 QWidget#RemoteVoiceWorkspace QLabel#RemoteVoiceHint {
     color: {muted}; font-weight: 400; font-size: 12px;
 }
-QWidget#RemoteVoiceWorkspace QPushButton#RemoteVoiceIconButton,
-QWidget#RemoteVoiceWorkspace QPushButton#RemoteVoiceSave {
+QWidget#VoiceoverSettingsWorkspace QWidget#RemoteVoiceWorkspace QPushButton#RemoteVoiceIconButton,
+QWidget#VoiceoverSettingsWorkspace QWidget#RemoteVoiceWorkspace QPushButton#RemoteVoiceSave {
     background: transparent; border: 1px solid {panel_border}; color: {text};
     border-radius: 8px;
 }
-QWidget#RemoteVoiceWorkspace QPushButton#RemoteVoicePreview {
+QWidget#VoiceoverSettingsWorkspace QWidget#RemoteVoiceWorkspace QPushButton#RemoteVoicePreview {
     background: {accent}; border: 1px solid {accent_border}; color: {text};
     border-radius: 8px;
 }
-QWidget#RemoteVoiceWorkspace QPushButton:hover { border-color: {accent}; }
-QWidget#RemoteVoiceWorkspace QPushButton:disabled {
+QWidget#VoiceoverSettingsWorkspace QWidget#RemoteVoiceWorkspace QPushButton:hover { border-color: {accent}; }
+QWidget#VoiceoverSettingsWorkspace QWidget#RemoteVoiceWorkspace QPushButton:disabled {
     background: {btn_disabled_bg}; color: {btn_disabled_fg}; border-color: {panel_border};
 }
-QWidget#RemoteVoiceWorkspace QLabel#RemoteVoiceTitle {
+QWidget#VoiceoverSettingsWorkspace QWidget#RemoteVoiceWorkspace QLabel#RemoteVoiceTitle {
     font-size: 14px; font-weight: 600; color: {text};
 }
 QWidget#CharacterVoiceEditor { background: transparent; }

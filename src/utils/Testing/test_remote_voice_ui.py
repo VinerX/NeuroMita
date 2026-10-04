@@ -65,6 +65,7 @@ def test_key_is_masked_and_validation_keeps_draft(panel):
     app, service, vm, widget = panel
     widget.key.setText("private-key")
     assert widget.key.echoMode() == QLineEdit.EchoMode.Password
+    assert widget.preview_character.text() == widget.character_title.text()
     assert not widget.eye.icon().isNull()
     widget.eye.trigger()
     assert widget.key.echoMode() == QLineEdit.EchoMode.Normal
@@ -81,7 +82,6 @@ def test_key_is_masked_and_validation_keeps_draft(panel):
 def test_profile_switch_saves_draft_without_network(panel):
     app, service, vm, widget = panel
     original_id = service.configuration().active_id
-    widget.name.setText("Мой голос")
     widget.key.setText("private-key")
     widget.voice.setText("a" * 32)
     widget.add_button.click()
@@ -90,7 +90,7 @@ def test_profile_switch_saves_draft_without_network(panel):
     assert widget.key.text() == ""
     widget.profiles.setCurrentIndex(widget.profiles.findData(original_id))
     settle(app, vm)
-    assert widget.name.text() == "Мой голос"
+    assert service.configuration().active.name == "Fish Audio"
     assert widget.key.text() == "private-key"
     assert widget.voice.text() == "a" * 32
     assert not service.status().verified
@@ -123,6 +123,26 @@ def test_actual_voiceover_panel_has_api_and_shared_playback(panel):
     assert root.playback_settings_frame.isVisible()
     assert not root.local_settings_frame.isVisible()
     assert not root.tg_settings_frame.isVisible()
+    assert root.api_preview_frame.isVisible()
+    remote_panel = root.api_settings_frame.findChild(RemoteVoiceSettingsWidget)
+    remote_panel.key.setText("Draft key")
+    root.use_voice_checkbox.setChecked(False)
+    controller._effective_use_voice = root.use_voice_checkbox.isChecked
+    controller._apply_voiceover_visibility_from_widgets()
+    root.voice_method_selector.buttons["TG"].click()
+    assert root.settings["VOICEOVER_METHOD"] == "TG"
+    assert root.tg_settings_frame.isVisible()
+    assert root.telegram_status_frame.isVisible()
+    assert not root.api_preview_frame.isVisible()
+    root.voice_method_selector.buttons["Local"].click()
+    assert root.settings["VOICEOVER_METHOD"] == "Local"
+    assert root.local_status_frame.isVisible()
+    root.voice_method_selector.buttons["API"].click()
+    assert root.api_preview_frame.isVisible()
+    assert remote_panel.key.text() == "Draft key"
+    actions.remote.update_state(busy=True)
+    assert not root.api_preview_frame.isEnabled()
+    assert not remote_panel.controls.isEnabled()
     actions.close()
     root.close()
 

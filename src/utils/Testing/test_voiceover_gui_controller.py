@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
@@ -89,16 +88,40 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         self.assertEqual(payload.get("category"), "voice")
         self.assertEqual(payload.get("state"), "green")
 
+    def test_page_status_uses_snapshot_and_preserves_connection_when_voice_is_off(self):
+        controller, bus = self._make_controller()
+        page_status = []
+        connection_status = []
+        controller.view.voiceover_status = SimpleNamespace(
+            set_status=lambda *args: page_status.append(args)
+        )
+        controller.view.telegram_status = SimpleNamespace(
+            set_status=lambda *args: connection_status.append(args)
+        )
+        controller._emit_voice_icon_state_from_snapshot(
+            {"current_model_id": "high", "installed": True, "initialized": False}
+        )
+        assert page_status[-1][0] == "warn"
+        assert bus.emitted[-1][1]["tooltip"] == page_status[-1][1]
+        controller._effective_method = lambda: "TG"
+        controller._effective_use_voice = lambda: False
+        controller._tg_connected = True
+        controller._emit_voice_icon_state()
+        assert page_status[-1][0] is None
+        assert connection_status[-1][0] == "green"
+
     def test_tts_selector_reads_installed_models_from_canonical_catalog(self):
         controller, _bus = self._make_controller()
         catalog = SimpleNamespace(
             ready_item_ids=lambda category: (
-                "edge_tts_rvc_cuda",
-                "edge_tts_rvc_onnx",
-                "medium",
+                (
+                    "edge_tts_rvc_cuda",
+                    "edge_tts_rvc_onnx",
+                    "medium",
+                )
+                if category == "tts"
+                else ()
             )
-            if category == "tts"
-            else ()
         )
         registry = SimpleNamespace(
             get_optional=lambda _contract: catalog,
@@ -134,7 +157,9 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         )
         registry = SimpleNamespace(get_optional=lambda _contract: local_voice)
 
-        with patch("controllers.gui.voiceover_controller.services", return_value=registry):
+        with patch(
+            "controllers.gui.voiceover_controller.services", return_value=registry
+        ):
             controller._select_or_init_model_async("high")
 
         self.assertEqual(calls, [("high", True)])
@@ -206,7 +231,9 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         controller._ui = lambda callback: callback()
         controller._sync_everything = lambda **kwargs: calls.append(kwargs)
 
-        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value=False))
+        controller._on_setting_changed(
+            SimpleNamespace(key="USE_VOICEOVER", value=False)
+        )
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
@@ -217,7 +244,9 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         controller._ui = lambda callback: callback()
         controller._sync_everything = lambda **kwargs: calls.append(kwargs)
 
-        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value="false"))
+        controller._on_setting_changed(
+            SimpleNamespace(key="USE_VOICEOVER", value="false")
+        )
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
@@ -244,8 +273,12 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
             True if key == "LOCAL_VOICE_LOAD_LAST" else default
         )
         started: list[str] = []
-        controller._select_model_async = lambda model_id, show_error=False: started.append(model_id)
-        controller._begin_model_loading = lambda model_id, silent=False: started.append(model_id) or True
+        controller._select_model_async = (
+            lambda model_id, show_error=False: started.append(model_id)
+        )
+        controller._begin_model_loading = (
+            lambda model_id, silent=False: started.append(model_id) or True
+        )
         controller._emit_voice_icon_state_from_snapshot = lambda _state: None
         controller._initialize_local_model = lambda model_id: started.append(model_id)
 

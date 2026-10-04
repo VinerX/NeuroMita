@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QDoubleSpinBox,
     QPlainTextEdit,
+    QAbstractSpinBox,
 )
 from ui.settings.voiceover_settings.remote_presentation import (
     LoadRemoteVoice,
@@ -33,10 +34,11 @@ from ui.widgets.character_voice_tabs import CharacterVoiceTabs
 from localization import translate
 from localization.live import tr_set, register
 from styles.theme import get_theme
+from ui.settings.voiceover_settings.widgets import VoiceCard, voice_label
 
 
 class RemoteVoiceSettingsWidget(QWidget):
-    def __init__(self, view_model, parent=None):
+    def __init__(self, view_model, parent=None, *, detached_preview=False):
         super().__init__(parent)
         self.setObjectName("RemoteVoiceWorkspace")
         self._icon_color = get_theme()["muted"]
@@ -47,7 +49,7 @@ class RemoteVoiceSettingsWidget(QWidget):
         self._character_voices = {}
         self._character_titles = {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         self.controls = QWidget()
         body = QVBoxLayout(self.controls)
@@ -71,10 +73,10 @@ class RemoteVoiceSettingsWidget(QWidget):
         self.provider = QComboBox()
         for template in view_model.templates:
             self.provider.addItem(template.name, template.id)
-        form.addRow(self._label("Провайдер", "Provider"), self.provider)
-        self.name = QLineEdit()
-        self.name.setMaxLength(80)
-        form.addRow(self._label("Название", "Name"), self.name)
+        if len(view_model.templates) > 1:
+            form.addRow(self._label("Провайдер", "Provider"), self.provider)
+        else:
+            self.provider.hide()
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         tr_set(
@@ -110,7 +112,7 @@ class RemoteVoiceSettingsWidget(QWidget):
         self.voices_button = self._icon_button(
             "fa5s.search", "Открыть каталог голосов", "Browse voices"
         )
-        self.voices_button.setFixedSize(44, 44)
+        self.voices_button.setFixedSize(38, 38)
         voice_row.addWidget(self.voices_button)
         self.model = QComboBox()
         form.addRow(self._label("Модель", "Model"), self.model)
@@ -118,16 +120,22 @@ class RemoteVoiceSettingsWidget(QWidget):
         self.speed.setRange(0.5, 2.0)
         self.speed.setSingleStep(0.1)
         self.speed.setSuffix(" ×")
-        form.addRow(self._label("Скорость", "Speed"), self.speed)
-        body.addLayout(form)
-        hint = tr_set(
-            QLabel(),
-            "Адрес API задан шаблоном. Ключи не попадают в логи.",
-            "The template supplies the API URL. Keys are omitted from logs.",
+        self.speed.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.speed.setKeyboardTracking(False)
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(self.speed, 1)
+        decrease = self._icon_button(
+            "fa5s.minus", "Уменьшить скорость", "Decrease speed"
         )
-        hint.setObjectName("RemoteVoiceHint")
-        hint.setWordWrap(True)
-        body.addWidget(hint)
+        increase = self._icon_button(
+            "fa5s.plus", "Увеличить скорость", "Increase speed"
+        )
+        decrease.clicked.connect(self.speed.stepDown)
+        increase.clicked.connect(self.speed.stepUp)
+        speed_row.addWidget(decrease)
+        speed_row.addWidget(increase)
+        form.addRow(self._label("Скорость", "Speed"), speed_row)
+        body.addLayout(form)
         voice_title = tr_set(QLabel(), "Голоса персонажей", "Character voices")
         voice_title.setObjectName("RemoteVoiceTitle")
         body.addWidget(voice_title)
@@ -158,30 +166,40 @@ class RemoteVoiceSettingsWidget(QWidget):
         )
         voice_card_layout.addWidget(self.voice_hint)
         body.addWidget(self.voice_tabs)
+        self.save_button = tr_set(QPushButton(), "Сохранить профиль", "Save profile")
+        self.save_button.setObjectName("RemoteVoiceSave")
+        self.save_button.setIcon(qta.icon("fa5s.save", color=self._icon_color))
+        body.addWidget(self.save_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.preview_panel = VoiceCard(
+            "Проверка голоса",
+            "Voice preview",
+            "fa5s.play",
+            "Прослушайте голос выбранного персонажа.",
+            "Listen to the selected character voice.",
+        )
+        preview_layout = self.preview_panel.body
+        self.preview_character = QLabel()
+        self.preview_character.setObjectName("RemoteVoiceTitle")
+        preview_layout.addWidget(self.preview_character)
         self.sample = QPlainTextEdit()
         self._sample_default = ""
         self._refresh_sample()
         register(self, lambda w: w._refresh_sample())
-        self.sample.setMaximumHeight(80)
+        self.sample.setMinimumHeight(120)
+        self.sample.setMaximumHeight(180)
         tr_set(
             self.sample,
             "Текст для проверки голоса",
             "Voice preview text",
             "setPlaceholderText",
         )
-        body.addWidget(self.sample)
-        buttons = QHBoxLayout()
-        self.save_button = tr_set(QPushButton(), "Сохранить", "Save")
-        self.save_button.setObjectName("RemoteVoiceSave")
-        self.save_button.setIcon(qta.icon("fa5s.save", color=self._icon_color))
+        preview_layout.addWidget(self.sample)
         self.preview_button = tr_set(
             QPushButton(), "Проверить и прослушать", "Test and listen"
         )
         self.preview_button.setObjectName("RemoteVoicePreview")
         self.preview_button.setIcon(qta.icon("fa5s.play", color=self._icon_color))
-        buttons.addWidget(self.save_button)
-        buttons.addWidget(self.preview_button)
-        body.addLayout(buttons)
+        preview_layout.addWidget(self.preview_button)
         quota = tr_set(
             QLabel(),
             "Проверка отправляет текст провайдеру и расходует баланс API.",
@@ -189,11 +207,14 @@ class RemoteVoiceSettingsWidget(QWidget):
         )
         quota.setObjectName("RemoteVoiceHint")
         quota.setWordWrap(True)
-        body.addWidget(quota)
+        preview_layout.addWidget(quota)
         layout.addWidget(self.controls)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        self.status.setObjectName("VoicePreviewStatus")
+        preview_layout.addWidget(self.status)
+        if not detached_preview:
+            layout.addWidget(self.preview_panel)
         self.profiles.currentIndexChanged.connect(self._select)
         self.provider.currentIndexChanged.connect(self._template_changed)
         self.add_button.clicked.connect(
@@ -232,7 +253,7 @@ class RemoteVoiceSettingsWidget(QWidget):
         button.setObjectName("RemoteVoiceIconButton")
         button.setIcon(qta.icon(icon, color=self._icon_color))
         tr_set(button, tooltip, english_tooltip, "setToolTip")
-        button.setFixedSize(32, 32)
+        button.setFixedSize(38, 38)
         return button
 
     def _toggle_key(self):
@@ -272,7 +293,9 @@ class RemoteVoiceSettingsWidget(QWidget):
             if self._selected_voice_id
             else translate("Общий голос", "Default voice")
         )
+        self.preview_character.setText(self.character_title.text())
         state = self._vm.state
+        self.status.setVisible(bool(state.busy or state.message))
         self.status.setText(
             translate("Выполняется…", "Working…")
             if state.busy
@@ -298,7 +321,6 @@ class RemoteVoiceSettingsWidget(QWidget):
         names = {v.character_id: v.display_name for v in self._preset.character_voices}
         return replace(
             self._preset,
-            name=self.name.text(),
             template_id=self.provider.currentData(),
             api_key=self.key.text(),
             voice_id=self._default_voice,
@@ -339,9 +361,14 @@ class RemoteVoiceSettingsWidget(QWidget):
             self._vm.dispatch(SelectRemoteVoice(selected, self._draft()))
 
     def _render(self, state):
-        self.controls.setEnabled(not state.busy and state.configuration is not None)
+        enabled = not state.busy and state.configuration is not None
+        self.controls.setEnabled(enabled)
+        self.preview_panel.setEnabled(enabled)
         self._refresh_dynamic_text()
-        self.status.setStyleSheet("color: #ef9292;" if state.error else "")
+        color = get_theme()["danger"] if state.error else get_theme()["success"]
+        if state.busy:
+            color = get_theme()["accent"]
+        self.status.setStyleSheet(f"color: {color};")
         if state.error and self._preset is not None:
             blocker = QSignalBlocker(self.profiles)
             self.profiles.setCurrentIndex(self.profiles.findData(self._preset.id))
@@ -359,7 +386,6 @@ class RemoteVoiceSettingsWidget(QWidget):
         del blocker
         self.provider.setCurrentIndex(self.provider.findData(self._preset.template_id))
         self._template_changed()
-        self.name.setText(self._preset.name)
         self.key.setText(self._preset.api_key)
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.eye.setIcon(qta.icon("fa5s.eye", color=self._icon_color))

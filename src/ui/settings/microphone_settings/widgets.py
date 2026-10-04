@@ -1,3 +1,4 @@
+from ui.widgets.toggle_switch import SettingsSwitch as MicrophoneSwitch
 from PyQt6.QtCore import QRectF, QSize, Qt, QTimer, QVariantAnimation, QEasingCurve
 from PyQt6.QtGui import QColor, QPainter, QFontMetrics
 from PyQt6.QtWidgets import (
@@ -86,53 +87,6 @@ class RecognitionStatusBadge(QFrame):
         )
         self.label.setText(text)
         self.dot.set_state(color, kind == "progress")
-
-
-class MicrophoneSwitch(QCheckBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(48, 28)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._position = 0.0
-        self._motion = QVariantAnimation(self)
-        self._motion.setDuration(150)
-        self._motion.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._motion.valueChanged.connect(self._animate)
-        self.toggled.connect(self._move)
-
-    def _move(self, checked):
-        self._motion.stop()
-        self._motion.setStartValue(self._position)
-        self._motion.setEndValue(1.0 if checked else 0.0)
-        self._motion.start()
-
-    def _animate(self, value):
-        self._position = float(value)
-        self.update()
-
-    def hitButton(self, point):
-        return self.rect().contains(point)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        theme = get_theme()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(
-            QColor(theme["accent"] if self.isChecked() else theme["panel_border"])
-        )
-        painter.drawRoundedRect(QRectF(1, 2, 46, 24), 12, 12)
-        painter.setBrush(QColor(theme["text"]))
-        position = (
-            self._position
-            if self._motion.state() == QVariantAnimation.State.Running
-            else float(self.isChecked())
-        )
-        painter.drawEllipse(QRectF(4 + position * 20, 5, 18, 18))
-        if self.hasFocus():
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QColor(theme["accent"]))
-            painter.drawRoundedRect(QRectF(0.5, 0.5, 47, 27), 13, 13)
 
 
 class MicrophoneCheckBox(QCheckBox):
