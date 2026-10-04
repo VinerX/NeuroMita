@@ -15,6 +15,7 @@ from localization.live import language_changed_signal
 from presets.api_templates import API_TEMPLATES_DATA
 from ui.settings.api_settings.ui import build_api_settings_ui
 from ui.widgets.tr_combobox import TRQComboBox
+from ui.widgets.template_url_edit import TemplateUrlEdit
 
 _APP = None
 
@@ -124,6 +125,30 @@ def test_paste_full_url_distributes_segments_and_preserves_template_path(editor)
     assert control.text() == "https://lan.example:444/proxy/v1/chat/completions"
     control.setText("https://custom/api/endpoint")
     assert control.text() == "https://custom/api/endpoint"
+
+
+def test_address_expands_smoothly_and_pushes_locked_path(editor):
+    control = TemplateUrlEdit()
+    control.set_template(next(item for item in API_TEMPLATES_DATA if item["id"] == 9))
+    control.setText("http://lan:1234/v1/chat/completions")
+    control.resize(740, 40)
+    control.show()
+    QApplication.processEvents()
+    initial_width = control.address_edit.width()
+    initial_path_x = control.suffix.x()
+    control.address_edit.setText("my-long-lan-server-address:1234")
+    assert control.address_edit.width() == initial_width
+    QTest.qWait(200)
+    assert control.address_edit.width() > initial_width
+    assert control.suffix.x() > initial_path_x
+    assert (
+        control.text() == "http://my-long-lan-server-address:1234/v1/chat/completions"
+    )
+    control.address_edit.setText("x" * 400)
+    QTest.qWait(200)
+    assert control.suffix.geometry().right() < control.width()
+    control.close()
+    control.deleteLater()
 
 
 def test_local_voice_names_retranslate_from_catalog_without_selection_signal(

@@ -1,4 +1,11 @@
-from PyQt6.QtCore import QEvent, QRegularExpression, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QRegularExpression,
+    Qt,
+    QVariantAnimation,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QKeySequence, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QApplication,
@@ -55,6 +62,13 @@ class TemplateUrlEdit(QWidget):
         )
         self.separator = QLabel("://")
         self.address_edit = QLineEdit()
+        self._width_animation = QVariantAnimation(self)
+        self._width_animation.setDuration(140)
+        self._width_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._width_animation.valueChanged.connect(
+            lambda value: self.address_edit.setFixedWidth(int(value))
+        )
+        self._target_width = 0
         self.address_edit.setPlaceholderText("127.0.0.1:1234")
         tr_set(
             self.address_edit, "Адрес сервера", "Server address", "setAccessibleName"
@@ -126,7 +140,7 @@ class TemplateUrlEdit(QWidget):
 
     def _changed(self, *_args) -> None:
         if not self._updating:
-            self._size_address()
+            self._size_address(animate=True)
             self.textChanged.emit(self.text())
 
     def _secure_typed(self, value: str) -> None:
@@ -134,7 +148,7 @@ class TemplateUrlEdit(QWidget):
             self.address_edit.setFocus()
             self.address_edit.setCursorPosition(0)
 
-    def _size_address(self) -> None:
+    def _size_address(self, *, animate: bool = False) -> None:
         self.secure_edit.setFixedWidth(
             self.secure_edit.fontMetrics().horizontalAdvance("s") + 4
         )
@@ -150,9 +164,21 @@ class TemplateUrlEdit(QWidget):
             self.address_edit.fontMetrics().horizontalAdvance(
                 self.address_edit.text() or self.address_edit.placeholderText()
             )
-            + 8
+            + 24
         )
-        self.address_edit.setFixedWidth(min(available, max(100, desired)))
+        target = min(available, max(100, desired))
+        if animate and self.isVisible() and self._stack.currentIndex() == 1:
+            if target == self._target_width:
+                return
+            self._width_animation.stop()
+            self._width_animation.setStartValue(self.address_edit.width())
+            self._width_animation.setEndValue(target)
+            self._target_width = target
+            self._width_animation.start()
+        else:
+            self._width_animation.stop()
+            self._target_width = target
+            self.address_edit.setFixedWidth(target)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
