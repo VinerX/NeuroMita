@@ -10,6 +10,7 @@ from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
 from utils import _
+from presets.api_endpoints import server_address
 from ui.provider_icons import template_provider, provider_icon
 
 
@@ -224,6 +225,7 @@ class PresetsMixin:
 
             base = self._parse_base(preset.get("base", None))
             self._active_template = dict(preset) if base is not None else None
+            v.api_url_row.edit.set_template(self._active_template or {})
             self._set_protocol_config_visible(base is None)
 
             v.template_combo.blockSignals(True)
@@ -250,12 +252,17 @@ class PresetsMixin:
                     url = url_tpl.format(model=model) if "{model}" in url_tpl else url_tpl
                 except Exception:
                     url = url_tpl
-            elif base is not None:
+            elif base is not None and not preset.get("url_editable"):
                 url = str(preset.get("url") or "")
             else:
                 url = str(state.get("url") or preset.get("url") or "")
 
-            v.api_url_row.set_text(url)
+            v.api_url_row.set_text(
+                server_address(preset, url) if preset.get("url_editable") else url
+            )
+            v.api_test_url_row.set_text(
+                str(state.get("test_url", preset.get("test_url", "")) or "")
+            )
             v.api_model_row.set_text(model)
             v.api_key_row.set_text(key)
             v.reserve_keys_row.set_text("\n".join([str(k).strip() for k in reserve_keys if str(k).strip()]))
@@ -278,7 +285,7 @@ class PresetsMixin:
                 v.fallback_editor.blockSignals(False)
 
             v.protocol_row.set_enabled(base is None)
-            v.api_url_row.set_enabled(base is None)
+            v.api_url_row.set_enabled(base is None or bool(preset.get("url_editable")))
 
             self._apply_help_links(preset)
             self._refresh_model_settings_dialect()

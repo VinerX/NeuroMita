@@ -474,7 +474,7 @@ class ServerController:
             defaults = {
                 "ASR_INPUT_MODE": "radio",
                 "MIC_ACTIVE": False,
-                "MIC_MUTE_WHILE_SPEAKING": True,
+                "MIC_MUTE_WHILE_SPEAKING": False,
                 "MITA_DIALOGUE_AUTO": True,
                 "DIALOGUE_AUTO_ROUNDS": 1,
                 "DIALOGUE_MAX_CHAIN_TURNS": 24,
@@ -847,6 +847,3 @@ class ServerController:
         if surface_character_ids:
             ui_payload["surface_character_ids"] = list(dict.fromkeys(surface_character_ids))
         self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, ui_payload)
-
-
-

@@ -20,6 +20,7 @@ from .widgets import (
 )
 from ui.provider_icons import provider_icon
 from ui.widgets.tr_combobox import TRQComboBox
+from ui.widgets.template_url_edit import TemplateUrlEdit
 from ui.widgets.settings_sections import CollapsibleSection
 
 
@@ -71,7 +72,8 @@ class ApiEditorTabs(QTabWidget):
 
 
 class ApiField(QWidget):
-    def __init__(self, title, *, password=False):
+
+    def __init__(self, title, *, password=False, editor=None):
         super().__init__()
         self._base_label = str(title)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -86,7 +88,7 @@ class ApiField(QWidget):
         layout.addLayout(self.heading)
         self.input_layout = QHBoxLayout()
         self.input_layout.setSpacing(6)
-        self.edit = QLineEdit()
+        self.edit = editor if editor is not None else QLineEdit()
         self.edit.setMinimumHeight(40)
         if password:
             self.edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -262,8 +264,20 @@ def build_api_settings_ui(self, parent_layout):
     identity.addWidget(template_field, 0, 1)
     content.addLayout(identity)
 
-    self.api_url_row = ApiField(_("Ссылка API", "API URL"))
+    self.api_url_row = ApiField(_("Ссылка API", "API URL"), editor=TemplateUrlEdit())
     content.addWidget(self.api_url_row)
+    self.api_test_url_row = ApiField(
+        _("URL проверки (необязательно)", "Test URL (optional)")
+    )
+    self.api_test_url_row.edit.setPlaceholderText("http://localhost:1234/v1/models")
+    self.api_test_url_row.edit.setToolTip(
+        _(
+            "GET-адрес для проверки подключения и загрузки списка моделей. Если его нет, проверьте ответы в песочнице.",
+            "GET endpoint for checking the connection and loading models. If unavailable, try responses in the sandbox.",
+        )
+    )
+    self.api_test_url_row.setVisible(False)
+    content.addWidget(self.api_test_url_row)
     credentials = QGridLayout()
     credentials.setHorizontalSpacing(16)
     credentials.setColumnStretch(0, 1)

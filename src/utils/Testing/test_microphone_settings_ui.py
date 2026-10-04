@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout
 import pytest
@@ -39,6 +39,7 @@ def panel():
     root.mic_monitor_controller.monitor.close()
     root.close()
     root.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     _APP.processEvents()
 
 
@@ -61,6 +62,11 @@ def test_refresh_uses_device_objects_and_full_names_without_changing_runtime(pan
         "name": long_name,
         "device_id": 12,
     }
+
+
+def test_pause_while_mita_speaks_defaults_to_off(panel):
+    root, _, _ = panel
+    assert not root.mic_mute_while_speaking_checkbox.isChecked()
 
 
 def test_missing_saved_microphone_is_not_replaced_by_first_device(panel):

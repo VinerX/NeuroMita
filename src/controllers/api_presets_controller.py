@@ -4,7 +4,8 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Iterable
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
+from presets.api_endpoints import resolve_api_url, resolve_test_url
 from urllib.parse import urlparse
 
 from core.app_paths import settings_path
@@ -44,6 +45,10 @@ class ApiTemplate:
     pricing: str = "mixed"
     badge_kind: str = ""
     url: str = ""
+    url_editable: bool = False
+    test_url_editable: bool = False
+    request_path: str = ""
+    test_path: str = ""
     url_tpl: str = ""
     default_model: str = ""
     known_models: List[str] = field(default_factory=list)
@@ -68,6 +73,7 @@ class UserPreset:
     badge_kind: str = ""
     default_model: str = ""
     url: str = ""
+    test_url: str = ""
     key: str = ""
     reserve_keys: List[str] = field(default_factory=list)
     # Round-robin по всем ключам на каждый запрос, а не только при сбое.
@@ -516,8 +522,11 @@ class ApiPresetsController(ApiPresetService):
         protocol_id = str(raw.get("protocol_id", "") or "").strip()
 
         url = str(raw.get("url", "") or "")
-        if base is not None:
+        template = self.templates.get(base)
+        if template and not template.url_editable:
             url = ""
+        elif template:
+            url = resolve_api_url(asdict(template), url or template.url)
 
         po = raw.get("protocol_overrides", {}) or {}
         if not isinstance(po, dict):
@@ -545,6 +554,7 @@ class ApiPresetsController(ApiPresetService):
             badge_kind=str(raw.get("badge_kind", "") or "").strip(),
             default_model=str(raw.get("default_model", "") or ""),
             url=url,
+            test_url=str(raw.get("test_url") or "").strip(),
             key=str(raw.get("key", "") or ""),
             reserve_keys=reserve_keys,
             reserve_keys_distribute=reserve_keys_distribute,
@@ -659,7 +669,6 @@ class ApiPresetsController(ApiPresetService):
                         up.protocol_id = str(tpl.protocol_id or "").strip()
             except Exception:
                 continue
-
 
     def _remap_conflicting_preset_ids(self) -> bool:
         """
@@ -815,25 +824,31 @@ class ApiPresetsController(ApiPresetService):
             "badge_kind": (tpl.badge_kind if tpl else p.badge_kind),
             "base": p.base,
             "protocol_id": protocol_id,
-
-            "url": p.url if not tpl else (tpl.url if tpl and tpl.url else ""),
+            "url": (
+                resolve_api_url(asdict(tpl), p.url or tpl.url)
+                if tpl and tpl.url_editable
+                else (tpl.url if tpl else p.url)
+            ),
+            "url_editable": bool(tpl and tpl.url_editable),
+            "test_url_editable": bool(tpl and tpl.test_url_editable),
+            "request_path": tpl.request_path if tpl else "",
+            "test_path": tpl.test_path if tpl else "",
             "url_tpl": tpl.url_tpl if tpl else "",
-
             "default_model": p.default_model or (tpl.default_model if tpl else ""),
             "known_models": self._known_models_for_template(tpl),
-
-            "test_url": tpl.test_url if tpl else "",
+            "test_url": resolve_test_url(asdict(tpl) if tpl else {}, p.url, p.test_url),
             "filter_fn": tpl.filter_fn if tpl else "",
             "documentation_url": tpl.documentation_url if tpl else "",
             "models_url": tpl.models_url if tpl else "",
             "key_url": tpl.key_url if tpl else "",
-
             "key": p.key,
             "reserve_keys": p.reserve_keys or [],
             "reserve_keys_distribute": bool(p.reserve_keys_distribute),
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
-            "model_profiles": tpl.model_profiles if tpl and p.model_settings is None else [],
+            "model_profiles": (
+                tpl.model_profiles if tpl and p.model_settings is None else []
+            ),
             "model_profile_overrides": p.model_profile_overrides or {},
             "model_settings": p.model_settings,
             "settings_schema_id": tpl.settings_schema_id if tpl else "",
@@ -1003,7 +1018,18 @@ class ApiPresetsController(ApiPresetService):
         up.pricing = str(data.get("pricing", up.pricing) or up.pricing)
         up.badge_kind = str(data.get("badge_kind", up.badge_kind) or up.badge_kind).strip()
         up.default_model = str(data.get("default_model", up.default_model) or up.default_model)
-        up.url = str(data.get("url", up.url) or up.url) if not base else ""
+        up.url = (
+            str(data.get("url", up.url) or "").strip()
+            if not template or template.url_editable
+            else ""
+        )
+        if template and template.url_editable:
+            up.url = resolve_api_url(asdict(template), up.url or template.url)
+        up.test_url = (
+            str(data.get("test_url", up.test_url) or "").strip()
+            if not template or template.test_url_editable
+            else ""
+        )
         up.key = str(data.get("key", up.key) or up.key)
 
         if "protocol_id" in data:
@@ -1192,21 +1218,50 @@ class ApiPresetsController(ApiPresetService):
 
         if base_id:
             p_tpl = self.templates.get(base_id)
-        elif preset_id and preset_id in self.presets:
+        elif (
+            "base" not in (event.data or {}) and preset_id and preset_id in self.presets
+        ):
             up = self.presets[preset_id]
             if up.base and up.base in self.templates:
                 p_tpl = self.templates[up.base]
         elif preset_id and preset_id in self.templates:
             p_tpl = self.templates[preset_id]
 
-        if not p_tpl or not p_tpl.test_url:
-            logger.warning(f"No test_url for preset {preset_id} and base {base_id}")
-            self.event_bus.emit(Events.ApiPresets.TEST_FAILED, {
-                "id": preset_id,
-                "error": "no_test_url",
-                "message": _("URL для тестирования не найден", "Test URL not found"),
-            })
+        payload = event.data or {}
+        saved = self.presets.get(preset_id)
+        api_url = str(payload.get("url", saved.url if saved else "") or "")
+        custom_test_url = str(
+            payload.get("test_url", saved.test_url if saved else "") or ""
+        )
+        test_url = resolve_test_url(
+            asdict(p_tpl) if p_tpl else {}, api_url, custom_test_url
+        )
+        if not test_url:
+            self.event_bus.emit(
+                Events.ApiPresets.TEST_FAILED,
+                {
+                    "id": preset_id,
+                    "error": "no_test_url",
+                    "message": _(
+                        "Укажите URL проверки. Без него можно пользоваться API и проверять ответы в песочнице.",
+                        "Enter a test URL. You can still use the API and try responses in the sandbox.",
+                    ),
+                },
+            )
             return
+        if p_tpl:
+            p_tpl = replace(p_tpl, test_url=test_url)
+        else:
+            p_tpl = ApiTemplate(
+                id=preset_id or 0,
+                name=saved.name if saved else "Custom API",
+                test_url=test_url,
+                protocol_id=str(
+                    payload.get("protocol_id")
+                    or (saved.protocol_id if saved else "")
+                    or "openai_compatible_default"
+                ),
+            )
 
         # если ключ не передали, попробуем взять из пресета
         if not key and preset_id and preset_id in self.presets:
@@ -1541,8 +1596,14 @@ class ApiPresetsController(ApiPresetService):
                 up.key = str(state["key"] or "")
             if "model" in state:
                 up.default_model = str(state["model"] or "")
-            if "url" in state and not up.base:
-                up.url = str(state["url"] or "")
+            template = self.templates.get(up.base)
+            if "url" in state and (not template or template.url_editable):
+                up.url = resolve_api_url(
+                    asdict(template) if template else {},
+                    str(state["url"] or (template.url if template else "")),
+                )
+            if "test_url" in state and (not template or template.test_url_editable):
+                up.test_url = str(state["test_url"] or "").strip()
             if "protocol_id" in state and not up.base:
                 up.protocol_id = str(state["protocol_id"] or "").strip()
             if "reserve_keys" in state:

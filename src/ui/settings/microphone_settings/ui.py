@@ -287,7 +287,7 @@ def build_microphone_settings_ui(self, parent_layout):
         (
             "mic_mute_while_speaking_checkbox",
             "MIC_MUTE_WHILE_SPEAKING",
-            True,
+            False,
             "Приостанавливать распознавание, пока Мита говорит",
             "Pause recognition while Mita speaks",
             "Не распознавать речь во время ответа Миты.",

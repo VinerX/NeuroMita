@@ -817,6 +817,18 @@ class VoiceoverGuiController(BaseController):
         self._ensure_tg_polling(tg_active)
         self._emit_voice_icon_state_from_snapshot(state)
 
+    @staticmethod
+    def _add_local_model_item(combo, name: str, model_id: str) -> None:
+        from installables.catalog_manifest import CATALOG_BY_ID
+
+        entry = CATALOG_BY_ID.get(f"tts:{model_id}")
+        ru = str(entry.metadata_ru.get("title") or name) if entry else name
+        en = str(entry.metadata_en.get("title") or "") if entry else ""
+        if hasattr(combo, "add_tr_item"):
+            combo.add_tr_item(ru, en, value=model_id)
+        else:
+            combo.addItem(_(ru, en), model_id)
+
     def _build_model_name_map(self, cfgs) -> dict[str, str]:
         mp: dict[str, str] = {}
         for c in cfgs or []:
@@ -891,7 +903,7 @@ class VoiceoverGuiController(BaseController):
         try:
             cb.clear()
             for name, mid in items:
-                cb.addItem(name, mid)
+                self._add_local_model_item(cb, name, mid)
         finally:
             cb.blockSignals(False)
 
@@ -1493,7 +1505,7 @@ class VoiceoverGuiController(BaseController):
         try:
             cb.clear()
             for name, mid in items:
-                cb.addItem(name, mid)
+                self._add_local_model_item(cb, name, mid)
         finally:
             cb.blockSignals(False)
 

@@ -164,6 +164,9 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
 
         v.protocol_row.combo.currentIndexChanged.connect(self._safe(self._on_protocol_changed, "protocol_changed"))
 
+        v.api_test_url_row.edit.textChanged.connect(
+            self._safe(self._on_field_changed, "test_url_changed")
+        )
         v.api_url_row.edit.textChanged.connect(self._safe(self._on_field_changed, "url_changed"))
         v.api_model_row.edit.textChanged.connect(self._safe(self._on_field_changed, "model_changed"))
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))

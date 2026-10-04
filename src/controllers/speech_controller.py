@@ -808,7 +808,7 @@ class SpeechController(SpeechService):
         if reset:
             gate.reset()
         input_mode = normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio"))
-        mute_while_speaking = bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
+        mute_while_speaking = bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", False))
         gate.configure(
             input_mode=input_mode,
             enabled=bool(self.settings.get("MIC_ACTIVE", False))
@@ -902,7 +902,10 @@ class SpeechController(SpeechService):
 
         # Не засчитываем то, что говорит сама Мита (её голос ловит микрофон),
         # пока активно окно её речи. Распознавание при этом не выключается.
-        if bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)) and self._is_mita_speaking():
+        if (
+            bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", False))
+            and self._is_mita_speaking()
+        ):
             performance_traces().finish(trace_id, "ignored", error_stage="asr.mita_speaking") if trace_id else None
             logger.debug(f"ASR заглушён (Мита говорит): игнор '{text}'")
             return

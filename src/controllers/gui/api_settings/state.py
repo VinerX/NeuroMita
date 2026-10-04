@@ -13,6 +13,7 @@ class PresetSnapshot:
     reserve_keys_text: str
     reserve_keys_distribute: bool
     protocol_id: str
+    test_url: str = ""
     name: str = ""
     model_settings: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)

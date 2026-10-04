@@ -1,3 +1,4 @@
+from ui.widgets.tr_combobox import TRQComboBox
 from ui.widgets.settings_section_header import create_settings_header
 import os
 from PyQt6.QtCore import Qt, QSignalBlocker, QUrl
@@ -360,7 +361,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
         QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred
     )
 
-    self.local_voice_combobox = QComboBox()
+    self.local_voice_combobox = TRQComboBox()
     self.local_voice_empty_status = QLabel(
         _(
             'Нет установленных моделей. <a href="install">Установить</a>',
