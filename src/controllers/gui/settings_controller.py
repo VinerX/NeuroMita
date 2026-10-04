@@ -16,7 +16,7 @@ class SettingsController(BaseController):
                 "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST",
                 "LOCAL_VOICE_INIT_ON_REQUEST",
                 "CHAT_FONT_SIZE", "SHOW_CHAT_TIMESTAMPS",
-                "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS",
+                "MAX_CHAT_HISTORY_DISPLAY",
                 "SHOW_STRUCTURED_IN_GUI", "STRUCTURED_EXPANDED_DEFAULT",
                 "CHAT_MAX_BUBBLE_WIDTH", "SHOW_SYSTEM_MESSAGES", "SHOW_TOKEN_INFO",
             ),
@@ -73,7 +73,7 @@ class SettingsController(BaseController):
             except Exception as e:
                 logger.error(f"Ошибка при изменении размера шрифта: {format_exception(e)}")
 
-        elif key in ["SHOW_CHAT_TIMESTAMPS", "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS",
+        elif key in ["SHOW_CHAT_TIMESTAMPS", "MAX_CHAT_HISTORY_DISPLAY",
                      "SHOW_STRUCTURED_IN_GUI", "STRUCTURED_EXPANDED_DEFAULT", "CHAT_MAX_BUBBLE_WIDTH",
                      "SHOW_SYSTEM_MESSAGES"]:
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)

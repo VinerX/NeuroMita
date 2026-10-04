@@ -1977,7 +1977,6 @@ class SandboxPage(QWidget):
             ("_capture_auto_attach_cb", "AUTO_ATTACH_IMAGES", False),
             ("_capture_camera_cb", "ENABLE_CAMERA_CAPTURE", False),
             ("_show_thinking_cb", "SHOW_THINK_IN_GUI", False),
-            ("_hide_tags_cb", "HIDE_CHAT_TAGS", True),
             ("_show_ts_cb", "SHOW_CHAT_TIMESTAMPS", True),
             ("_show_sys_cb", "SHOW_SYSTEM_MESSAGES", False),
             ("_show_tokens_cb", "SHOW_TOKEN_INFO", False),
@@ -2095,13 +2094,6 @@ class SandboxPage(QWidget):
         think_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_THINK_IN_GUI", v))
         display_layout.addWidget(think_cb)
         self._show_thinking_cb = think_cb
-
-        tags_cb = tr_set(QCheckBox(), "Скрывать теги в чате", "Hide tags in chat")
-        tags_cb.setObjectName("SandboxCaptureToggle")
-        tags_cb.setChecked(bool(self._setting("HIDE_CHAT_TAGS", True)))
-        tags_cb.toggled.connect(lambda v: self._on_capture_toggle("HIDE_CHAT_TAGS", v))
-        display_layout.addWidget(tags_cb)
-        self._hide_tags_cb = tags_cb
 
         ts_cb = tr_set(QCheckBox(), "Показывать время сообщений", "Show timestamps")
         ts_cb.setObjectName("SandboxCaptureToggle")

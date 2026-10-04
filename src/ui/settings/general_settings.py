@@ -209,11 +209,6 @@ def setup_general_settings_controls(self, parent):
          'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Показывать метки времени рядом с сообщениями в чате.',
                       'Show timestamps next to messages in chat.')},
-        {'label': _('Скрывать теги', 'Hide Tags'), 'key': 'HIDE_CHAT_TAGS',
-         'type': 'checkbutton', 'default_checkbutton': True,
-         'tooltip': _('Скрывать теги (<e>, <c>, <a>, [b], [i], [color]) в отображаемом тексте чата.',
-                      'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
-
         {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
          'type': 'checkbutton', 'default_checkbutton': False,
          'tooltip': _('Отображать блок «мышления» модели как отдельное сообщение. '

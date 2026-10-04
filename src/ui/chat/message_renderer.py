@@ -378,12 +378,6 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     if has_any_images:
         full_text = _strip_hidden_image_descriptions(full_text)
 
-    hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
-    if hide_tags:
-        import re
-        full_text = re.sub(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)', "", full_text, flags=re.DOTALL)
-        full_text = re.sub(r' +', ' ', full_text).strip()
-
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
     # System/event notes read cleaner without a timestamp row.
     if role in ("system", "event"):
@@ -414,11 +408,6 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             group_text = " ".join(t.strip() for t in texts).strip()
             if has_any_images:
                 group_text = _strip_hidden_image_descriptions(group_text)
-            if hide_tags:
-                import re
-                group_text = re.sub(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)', "", group_text, flags=re.DOTALL)
-                group_text = re.sub(r' +', ' ', group_text).strip()
-
             if not group_text:
                 continue
 
@@ -701,7 +690,6 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
     target_groups = _group_segments_by_target(segments) if segments else []
     speaker_name = getattr(message, "_speaker_name", "") or ""
     stream_sample_id = getattr(message, "_sample_id", None)
-    hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
 
     if len(target_groups) > 1:
@@ -709,17 +697,6 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
         message_parts = []
         for index, (target, texts) in enumerate(target_groups):
             group_text = " ".join(text.strip() for text in texts).strip()
-            if hide_tags:
-                import re
-
-                group_text = re.sub(
-                    r"(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)",
-                    "",
-                    group_text,
-                    flags=re.DOTALL,
-                )
-                group_text = re.sub(r" +", " ", group_text).strip()
-
             is_last = index == len(target_groups) - 1
             is_self = target and speaker_name.lower().startswith(target.lower())
             display_name = (
