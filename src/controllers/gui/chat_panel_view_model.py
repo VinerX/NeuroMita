@@ -2,6 +2,9 @@ from __future__ import annotations
 from core.error_utils import format_exception
 
 from typing import Any, Callable
+import uuid
+
+from PyQt6.QtCore import QTimer
 
 from controllers.gui.intent_view_model import IntentViewModel
 from core.events import Events, get_event_bus
@@ -13,12 +16,15 @@ from services.contracts import (
     CharacterRegistry,
     GenerationActivityService,
     SettingsService,
+    ASRCaptureState,
+    SpeechService,
 )
 from ui.widgets.chat_panel_presentation import (
     ChatCaptureScreenRequested,
     ChatClearStagedRequested,
     ChatImagesStaged,
     ChatInputChanged,
+    ChatMicrophoneToggled,
     ChatOpenHistoryRequested,
     ChatPanelActivated,
     ChatPanelState,
@@ -37,6 +43,16 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
         self._backend_ready = backend_ready
         self._settings = use(SettingsService)
         self._bus = get_event_bus()
+        self._capture_session = f"desktop:{uuid.uuid4().hex}"
+        self._capture_generation = 0
+        self._capture_requested = False
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setInterval(800)
+        self._capture_timer.timeout.connect(self._refresh_capture)
+        self._capture_timer.start()
+        self.track_subscription(self._bus.subscribe(
+            Events.Speech.ASR_CAPTURE_CHANGED, self._on_capture_changed, weak=False,
+        ))
         for event_name in (
             Events.Character.CURRENT_CHANGED,
             Events.Character.RELOAD_DATA,
@@ -64,13 +80,18 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
         self.track_subscription(
             self._settings.subscribe(
                 self._on_setting_changed,
-                keys=("AUTO_ATTACH_IMAGES", "ENABLE_CAMERA_CAPTURE", "LAST_API_PRESET_ID"),
+                keys=("AUTO_ATTACH_IMAGES", "ENABLE_CAMERA_CAPTURE", "LAST_API_PRESET_ID",
+                      "MIC_ACTIVE", "ASR_INPUT_MODE"),
             )
         )
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, ChatPanelActivated):
+            self._refresh_capture()
             self.refresh()
+            return
+        if isinstance(intent, ChatMicrophoneToggled):
+            self._toggle_microphone()
             return
         if isinstance(intent, ChatInputChanged):
             self._apply_input(intent.has_text, intent.staged_count)
@@ -318,4 +339,56 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
         self._post_ui(lambda: self.update_state(active_generation_count=active_count))
 
     def _on_setting_changed(self, change: Any) -> None:
-        self._post_ui(self.refresh)
+        if change.key in ("MIC_ACTIVE", "ASR_INPUT_MODE"):
+            self._post_ui(self._refresh_capture)
+        else:
+            self._post_ui(self.refresh)
+
+    def _toggle_microphone(self) -> None:
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            return
+        capture = speech.capture_state()
+        if capture.mode != "radio":
+            return
+        active = not (capture.active and capture.session_id == self._capture_session)
+        self._capture_generation += 1
+        self._capture_requested = speech.set_radio_capture(
+            active=active, session_id=self._capture_session, generation=self._capture_generation,
+        ) and active
+        self._apply_capture_state(speech.capture_state())
+
+    def _refresh_capture(self) -> None:
+        if self.is_closed:
+            return
+        speech = services().get_optional(SpeechService)
+        capture = speech.capture_state() if speech is not None else ASRCaptureState()
+        if self._capture_requested:
+            if (capture.ready and capture.active and capture.permitted
+                    and capture.mode == "radio" and capture.session_id == self._capture_session):
+                self._capture_generation += 1
+                self._capture_requested = speech.set_radio_capture(
+                    active=True, session_id=self._capture_session, generation=self._capture_generation, renew=True,
+                )
+                capture = speech.capture_state()
+            else:
+                self._capture_requested = False
+        if capture != self.state.capture:
+            self._apply_capture_state(capture)
+
+    def _apply_capture_state(self, capture: ASRCaptureState) -> None:
+        self.update_state(capture=capture, capture_owned=capture.session_id == self._capture_session)
+
+    def _on_capture_changed(self, event: Any) -> None:
+        capture = getattr(event, "data", None)
+        if isinstance(capture, ASRCaptureState):
+            self._post_ui(lambda: self._apply_capture_state(capture))
+
+    def close(self) -> None:
+        if self.is_closed:
+            return
+        self._capture_timer.stop()
+        speech = services().get_optional(SpeechService)
+        if speech is not None:
+            speech.release_radio_capture(self._capture_session)
+        super().close()

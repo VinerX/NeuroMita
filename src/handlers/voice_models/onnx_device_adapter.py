@@ -5,6 +5,21 @@ from typing import Any
 
 
 def enable_indexed_directml(inference_module: Any) -> bool:
+    execution_device = getattr(inference_module, "OnnxExecutionDevice", None)
+    if callable(execution_device) and all(
+        callable(getattr(inference_module, name, None))
+        for name in ("resolve_execution_device", "create_session")
+    ):
+        try:
+            for index in (0, 1):
+                runtime = execution_device("dml", index)
+                provider, options = runtime.providers[0]
+                if provider != "DmlExecutionProvider" or int(options["device_id"]) != index:
+                    return False
+            return True
+        except (AttributeError, TypeError, ValueError, IndexError, KeyError):
+            return False
+
     if getattr(inference_module, "_neuromita_indexed_dml_patch", False):
         return True
 

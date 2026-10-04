@@ -101,6 +101,11 @@ class SpeakingWindow:
                     )
             return bool(self._leases) or now < self._tail_until
 
+    def blocked_until(self) -> float:
+        self.is_active()
+        with self._lock:
+            return max(self._tail_until, max(self._leases.values(), default=0.0))
+
     def _lease_for(self, duration_sec: float) -> float:
         """Длительность аренды по заявленной моду длине реплики.
 

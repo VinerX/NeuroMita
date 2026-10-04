@@ -12,14 +12,21 @@ class AIHubSettingsState:
     selected_component_id: str = ""
     schema: Any = ()
     values: Any = ()
+    saved_values: Any = ()
     field_errors: Any = ()
+    catalog_loading: bool = True
+    catalog_error: str = ""
+    load_error: str = ""
     loading: bool = False
     saving: bool = False
+    save_status: str = "idle"
     dirty: bool = False
     status_text: str = ""
     compile_available: bool = False
     compile_cache_exists: bool = False
     compile_cache_size_bytes: int = 0
+    compile_metadata_state: str = "missing"
+    compile_targets: Any = ()
     compile_busy: bool = False
     compile_revision: int = 0
     components_revision: int = 0
@@ -31,6 +38,8 @@ class AIHubSettingsState:
 class ApplyAIHubSettingsRows(UiIntent):
     rows: Any
     category: str | None
+    catalog_loading: bool = False
+    catalog_error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +49,7 @@ class SelectAIHubSettingsComponent(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class AIHubSettingsChanged(UiIntent):
-    pass
+    values: Any = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +69,7 @@ class DiscardAIHubSettingsChanges(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class CompileAIHubModel(UiIntent):
-    pass
+    values: Any = ()
 
 
 @dataclass(frozen=True, slots=True)

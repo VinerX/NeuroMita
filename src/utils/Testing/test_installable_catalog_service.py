@@ -754,6 +754,45 @@ for name in (
         self.assertEqual(values, {"device": "cuda:0"})
         self.assertEqual(component.saved, {"device": "cuda:0"})
 
+    def test_onnx_asr_choices_and_legacy_settings_use_specific_directml_adapters(self):
+        hardware = SimpleNamespace(snapshot=lambda refresh=False: {
+            "adapters": [
+                {"index": 2, "name": "RTX 5060 Ti", "luid": "0000000000000003"},
+                {"index": 0, "name": "AMD Radeon", "luid": "0000000000000001"},
+                {"index": 1, "name": "RTX A400", "luid": "0000000000000002"},
+            ],
+        })
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
+
+        class Component:
+            def settings_schema(self):
+                return [{"key": "device", "type": "combobox",
+                         "options": ["auto", "dml", "cpu"], "default": "auto"}]
+
+            def load_settings(self):
+                return {"device": "dml"}
+
+            def validate_settings(self, _values):
+                return SimpleNamespace(ok=True, errors={})
+
+            def save_settings(self, values):
+                self.saved = dict(values)
+
+        for component_id in ("asr:whisper_onnx", "asr:gigaam_onnx"):
+            component = Component()
+            with self.subTest(component_id=component_id), patch.object(service, "require_component", return_value=component):
+                options = service.settings_schema(component_id)[0]["options"]
+                self.assertNotIn("dml", options["values"])
+                self.assertEqual(
+                    [options["display_labels"][value] for value in options["values"] if value.startswith("dml@")],
+                    ["dml:0 (AMD Radeon)", "dml:1 (RTX A400)", "dml:2 (RTX 5060 Ti)"],
+                )
+                self.assertEqual(service.load_settings(component_id), {"device": "dml@0000000000000001"})
+                self.assertEqual(component.saved, {"device": "dml@0000000000000001"})
+                self.assertTrue(service.save_component_settings(component_id, {"device": "dml@0000000000000002"})["ok"])
+                self.assertFalse(service.save_component_settings(component_id, {"device": "dml:9"})["ok"])
+
     def test_install_preview_discloses_missing_backend_and_packages(self):
         hardware = SimpleNamespace(
             snapshot=lambda refresh=False: {

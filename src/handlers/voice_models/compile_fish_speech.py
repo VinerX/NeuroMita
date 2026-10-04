@@ -6,7 +6,7 @@ import site
 import sys
 from pathlib import Path
 
-from core.torch_compile_runtime import configure_compile_environment
+from core.torch_compile_runtime import configure_compile_environment, record_compile_target
 
 
 REFERENCE_TEXT = (
@@ -30,8 +30,8 @@ def _runtime_paths() -> list[str]:
     )
 
 
-def _activate_runtime_paths(paths: list[str]) -> None:
-    configure_compile_environment(paths)
+def _activate_runtime_paths(paths: list[str], *, device: str) -> None:
+    configure_compile_environment(paths, device=device)
     normalized = {
         os.path.normcase(os.path.abspath(path))
         for path in paths
@@ -62,9 +62,16 @@ def _activate_runtime_paths(paths: list[str]) -> None:
 
 
 def compile_fish_speech(reference_audio: str, *, device: str = "cuda") -> None:
-    _activate_runtime_paths(_runtime_paths())
+    _activate_runtime_paths(_runtime_paths(), device=device)
 
     print(f"Requested compilation device: {device}", flush=True)
+    print(f"TorchInductor cache: {os.environ['TORCHINDUCTOR_CACHE_DIR']}", flush=True)
+    print(f"Triton cache: {os.environ['TRITON_CACHE_DIR']}", flush=True)
+    effective_device = str(device or "").strip()
+    gpu_name = ""
+    compute_capability = ""
+    torch_version = ""
+    cuda_version = ""
     if device.startswith("cuda"):
         import torch
 
@@ -82,8 +89,14 @@ def compile_fish_speech(reference_audio: str, *, device: str = "cuda") -> None:
             raise RuntimeError(
                 f"CUDA device {device} is unavailable; detected {count} CUDA device(s)"
             )
+        effective_device = f"cuda:{index}"
         torch.cuda.set_device(index)
-        print(f"Compilation GPU: {torch.cuda.get_device_name(index)}", flush=True)
+        gpu_name = str(torch.cuda.get_device_name(index))
+        capability = torch.cuda.get_device_capability(index)
+        compute_capability = f"{int(capability[0])}.{int(capability[1])}"
+        torch_version = str(torch.__version__)
+        cuda_version = str(torch.version.cuda or "")
+        print(f"Compilation GPU: {gpu_name}", flush=True)
 
     import fish_speech_lib
 
@@ -93,7 +106,7 @@ def compile_fish_speech(reference_audio: str, *, device: str = "cuda") -> None:
     from fish_speech_lib.inference import FishSpeech
 
     print("Загрузка Fish Speech+ и компиляция CUDA-ядер…", flush=True)
-    tts = FishSpeech(device=device, half=False, compile_model=True)
+    tts = FishSpeech(device=effective_device, half=False, compile_model=True)
     tts(
         "Проверка компиляции.",
         reference_audio=str(Path(reference_audio).resolve()),
@@ -101,6 +114,13 @@ def compile_fish_speech(reference_audio: str, *, device: str = "cuda") -> None:
         max_new_tokens=64,
         chunk_length=64,
         use_memory_cache=False,
+    )
+    record_compile_target(
+        effective_device,
+        gpu_name=gpu_name,
+        compute_capability=compute_capability,
+        torch_version=torch_version,
+        cuda_version=cuda_version,
     )
     print("Компиляция Fish Speech+ завершена.", flush=True)
 

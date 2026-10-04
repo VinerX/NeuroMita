@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from utils import getTranslationVariant as _t
 
 from .helpers import qpixmap
+from .status_widgets import StatusIcon
 
 
 class Chip(QLabel):
@@ -98,6 +99,10 @@ class CategoryButton(QFrame):
         self._count_lbl.setObjectName("AIHubCategoryCount")
         self._count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._count_lbl, 0)
+        self._count_spinner = StatusIcon(20)
+        self._count_spinner.set_status("fa5s.circle-notch", spinning=True)
+        self._count_spinner.hide()
+        lay.addWidget(self._count_spinner, 0)
 
     def setLabel(self, label: str) -> None:
         self._label_lbl.setText(str(label or ""))
@@ -109,6 +114,14 @@ class CategoryButton(QFrame):
         tip = _t("Доступно компонентов: {n}", "Components available: {n}").format(n=count)
         self._count_lbl.setToolTip(tip)
         self.setToolTip(tip)
+
+    def setLoading(self, loading: bool) -> None:
+        self._count_lbl.setVisible(not loading)
+        self._count_spinner.setVisible(loading)
+        if loading:
+            tip = _t("Загрузка компонентов…", "Loading components…")
+            self.setToolTip(tip)
+            self._count_spinner.setToolTip(tip)
 
     def setSelected(self, selected: bool) -> None:
         if self._selected == selected:

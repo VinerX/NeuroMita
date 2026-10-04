@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from core.events import Event, Events, get_event_bus
 from core.services import services, use
+from main_logger import logger
 from services.contracts import (
     ApiPresetService,
     CaptureService,
@@ -860,12 +861,28 @@ class _InstallableController:
         service = services().get_optional(VoiceModelService)
         return dict(service.compile_status() or {}) if service is not None else {}
 
-    def compile_model(self, component_id: str, *, clear_only: bool = False) -> bool:
+    def compile_model(
+        self, component_id: str, *, clear_only: bool = False, device: str | None = None
+    ) -> bool:
         service = services().get_optional(VoiceModelService)
         if service is None:
+            logger.error(
+                "Cannot start Fish Speech+ compilation: VoiceModelService is not registered; "
+                f"component={component_id}, clear_only={bool(clear_only)}"
+            )
             return False
         model_id = str(component_id or "").split(":", 1)[-1]
-        return bool(service.start_compile(model_id, clear_only=clear_only, with_ui=True))
+        accepted = bool(
+            service.start_compile(
+                model_id, clear_only=clear_only, device=device, with_ui=True
+            )
+        )
+        if not accepted:
+            logger.error(
+                "VoiceModelService rejected Fish Speech+ compilation: "
+                f"component={component_id}, model_id={model_id}, clear_only={bool(clear_only)}"
+            )
+        return accepted
 
     def admit(self, action: str, payload: dict[str, Any]):
         operations = services().get(InstallableOperationsService)

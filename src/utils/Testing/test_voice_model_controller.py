@@ -441,7 +441,7 @@ class VoiceModelControllerTests(unittest.TestCase):
         self.assertEqual(saved["silero_rvc_cuda"]["silero_rvc_is_half"], "False")
         self.assertEqual(saved["edge_tts_rvc_cuda"]["is_half"], "True")
 
-    def test_fish_compile_uses_selected_cuda_device(self):
+    def test_fish_compile_uses_explicit_device_despite_stale_catalog(self):
         controller = VoiceModelController.__new__(VoiceModelController)
         controller._lock = threading.RLock()
         controller.local_voice_models = [
@@ -450,7 +450,7 @@ class VoiceModelControllerTests(unittest.TestCase):
                 "settings": [
                     {
                         "key": "device",
-                        "options": {"default": "cuda:1"},
+                        "options": {"default": "cuda:0"},
                     }
                 ],
             }
@@ -466,9 +466,55 @@ class VoiceModelControllerTests(unittest.TestCase):
 
         registry = SimpleNamespace(get_optional=lambda _contract: _Operations())
         with patch("controllers.voice_model_controller.services", return_value=registry):
-            self.assertTrue(controller.start_compile("medium+", with_ui=False))
+            self.assertTrue(controller.start_compile("medium+", device="cuda:1", with_ui=False))
 
         self.assertEqual(seen["device"], "cuda:1")
+
+    def test_fish_compile_without_explicit_device_reads_saved_settings(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        seen = {}
+
+        class _Operations:
+            @staticmethod
+            def initialize(payload):
+                seen.update(payload)
+                return SimpleNamespace(accepted=True, error="")
+
+        registry = SimpleNamespace(get_optional=lambda _contract: _Operations())
+        with patch("controllers.voice_model_controller.services", return_value=registry), patch(
+            "handlers.voice_models.base_model.load_voice_model_settings",
+            return_value={"fsprvc_fsp_device": "cuda:2"},
+        ):
+            self.assertTrue(controller.start_compile("medium+low", with_ui=False))
+
+        self.assertEqual(seen["device"], "cuda:2")
+
+    def test_fish_compile_rejects_missing_device_instead_of_using_cuda_zero(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        with patch(
+            "handlers.voice_models.base_model.load_voice_model_settings",
+            return_value={},
+        ):
+            self.assertFalse(controller.start_compile("medium+", with_ui=False))
+
+    def test_fish_initialize_plan_binds_device_to_compile_step(self):
+        model = FishSpeechModel.__new__(FishSpeechModel)
+        model.model_id = "medium+low"
+        compile_step = object()
+        with patch(
+            "handlers.voice_models.fish_speech_model.FishSpeechInstallSpec._compile_call",
+            return_value=compile_step,
+        ) as make_compile_step:
+            plan = model.build_initialize_plan({
+                "initialize_mode": "compile",
+                "device": "cuda:1",
+            })
+
+        self.assertIs(plan.actions[0].fn, compile_step)
+        self.assertEqual(make_compile_step.call_args.kwargs["device"], "cuda:1")
+        self.assertFalse(make_compile_step.call_args.kwargs["clear_only"])
+        self.assertNotIn("clear_cache", make_compile_step.call_args.kwargs)
 
     def test_fish_install_uses_selected_cuda_device(self):
         controller = VoiceModelController.__new__(VoiceModelController)

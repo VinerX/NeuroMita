@@ -51,6 +51,7 @@ from utils import getTranslationVariant as _
 from .constants import CATEGORY_ICONS, CATEGORY_ORDER, ROW_CATEGORY_MAP, category_label
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
 from .widgets import CategoryButton, ModelCard, Stat
+from .status_widgets import SettingsStatusPane
 
 
 class _BackendInstallConfirmationDialog(QDialog):
@@ -440,6 +441,7 @@ class AIHubDialog(QDialog):
 
         # settings page
         self._settings_panel = SettingsPanel(self._settings_view_model)
+        self._settings_panel.request_install_view.connect(lambda: self._set_tab("install"))
         self._stack.addWidget(self._settings_panel)
 
         col.addWidget(self._stack, 1)
@@ -757,11 +759,13 @@ class AIHubDialog(QDialog):
 
     def render(self, state: AIHubState) -> None:
         previous_revision = getattr(self, "_rendered_revision", -1)
+        previously_refreshing = self._refresh_inflight
         self._rendered_revision = state.revision
         self._rows = [dict(mutable_payload(item) or {}) for item in state.rows]
         self._hardware = dict(mutable_payload(state.hardware) or {})
         self._loaded_once = bool(state.loaded_once)
         self._refresh_inflight = bool(state.refreshing)
+        self._catalog_error = str(state.error or "") if not state.rows else ""
         self._last_check_ts = state.last_check_ts
         self._queue_state = dict(
             mutable_payload(state.queue_state)
@@ -775,11 +779,14 @@ class AIHubDialog(QDialog):
             self.btn_refresh.setEnabled(not state.refreshing)
         if state.refreshing and not self._rows:
             self._show_scroll_loading()
-        elif state.revision != previous_revision:
+        elif state.revision != previous_revision or previously_refreshing != state.refreshing:
             self._refresh_views()
         else:
             self._rebuild_queue_panel()
             self._apply_busy_state()
+
+        self._rebuild_category_list()
+        self._sync_settings_panel()
 
         self._set_task_status(state.task_status)
         self._set_install_logs_visible(state.install_logs_visible)
@@ -818,7 +825,7 @@ class AIHubDialog(QDialog):
         self._update_summary()
         # propagate the same row set to the Settings panel
         if hasattr(self, "_settings_panel"):
-            self._settings_panel.apply_data(self._rows, self._selected_category)
+            self._sync_settings_panel()
         # Отложенный переход к настройкам конкретного компонента (шестерёнка у модели
         # озвучки и т.п.): открываем вкладку «Настройки» и выделяем нужную модель.
         if self._pending_component_id:
@@ -839,6 +846,17 @@ class AIHubDialog(QDialog):
             panel.discard_unsaved_changes()
         return True
 
+    def _sync_settings_panel(self) -> None:
+        if not hasattr(self, "_settings_panel"):
+            return
+        error = getattr(self, "_catalog_error", "")
+        self._settings_panel.apply_data(
+            self._rows,
+            self._selected_category,
+            loading=bool(self._refresh_inflight or (not self._loaded_once and not error)),
+            error=error,
+        )
+
     def _render_tab_selection(self, key: str) -> None:
         for k, btn in self._tab_buttons.items():
             btn.setProperty("active", "true" if k == key else "false")
@@ -857,7 +875,7 @@ class AIHubDialog(QDialog):
         self._stack.setCurrentIndex(1 if key == "settings" else 0)
         # the settings panel should reflect the current category when shown
         if key == "settings" and hasattr(self, "_settings_panel"):
-            self._settings_panel.apply_data(self._rows, self._selected_category)
+            self._sync_settings_panel()
 
     def _set_backend_filter(self, key: str) -> None:
         key = key if key in ("all", "cuda", "onnx", "cpu") else "all"
@@ -872,7 +890,7 @@ class AIHubDialog(QDialog):
     def _open_component_settings(self, component_id: str) -> None:
         self._set_tab("settings")
         if hasattr(self, "_settings_panel"):
-            self._settings_panel.apply_data(self._rows, self._selected_category)
+            self._sync_settings_panel()
             self._settings_panel.select_component(component_id)
 
     # ----------------------------------------------------------- categories
@@ -890,6 +908,7 @@ class AIHubDialog(QDialog):
         for key, btn in self._category_buttons.items():
             btn.setLabel(category_label(key))
             btn.setCount(counts.get(key, 0))
+            btn.setLoading(bool(self._refresh_inflight or not self._loaded_once) and not bool(getattr(self, "_catalog_error", "")))
             btn.setSelected(key == selected)
 
         self._selected_category = selected
@@ -907,7 +926,7 @@ class AIHubDialog(QDialog):
             btn.setSelected(k == key)
         self._rebuild_component_list()
         if hasattr(self, "_settings_panel"):
-            self._settings_panel.apply_data(self._rows, key)
+            self._sync_settings_panel()
         self._update_summary()
         if self._loaded_once and not self._refresh_inflight and not self._category_status_loaded(key):
             QTimer.singleShot(0, lambda: self.refresh(force=False, include_status=True))
@@ -1018,6 +1037,7 @@ class AIHubDialog(QDialog):
 
     # ----------------------------------------------------------- list rendering
     def _clear_scroll(self) -> None:
+        self._catalog_loading_pane = None
         # Remove every child widget but keep the trailing stretch.
         while self._scroll_layout.count() > 1:
             item = self._scroll_layout.takeAt(0)
@@ -1031,28 +1051,20 @@ class AIHubDialog(QDialog):
                 w.deleteLater()
 
     def _show_scroll_loading(self) -> None:
-        """Keep a calm empty state while the toolbar spinner owns progress."""
+        if getattr(self, "_catalog_loading_pane", None) is not None and self._catalog_loading_pane.isVisible():
+            return
         self._clear_scroll()
-
-        box = QWidget()
-        box.setObjectName("AIHubLoading")
-        box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(0, 48, 0, 0)
-        lay.setSpacing(0)
-        lay.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-
-        label = QLabel(
-            _(
-                "Каталог появится после проверки установленных компонентов.",
-                "The catalog will appear after installed components are checked.",
-            )
+        pane = SettingsStatusPane(self._scroll_content)
+        pane.setMinimumHeight(360)
+        pane.present(
+            _("Загружаем каталог компонентов", "Loading component catalog"),
+            _("Проверяем установленные модели и доступные компоненты. Это может занять несколько секунд.",
+              "Checking installed models and available components. This may take a few seconds."),
+            icon="fa5s.circle-notch", loading=True,
         )
-        label.setObjectName("AIHubEmpty")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._catalog_loading_pane = pane
+        self._scroll_layout.insertWidget(0, pane, 1)
 
-        self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, box)
 
     def _open_models_folder(self) -> None:
         """Открыть папку с голосовыми моделями (``Models`` или NEUROMITA_MODELS_DIR)
@@ -1100,13 +1112,18 @@ class AIHubDialog(QDialog):
             return
         self._clear_scroll()
         if not rows:
-            empty = QLabel(
-                _("Ничего не найдено по выбранным критериям.",
-                  "No components match the current filters.")
+            pane = SettingsStatusPane(self._scroll_content)
+            pane.setMinimumHeight(360)
+            error = getattr(self, "_catalog_error", "")
+            pane.present(
+                _("Не удалось загрузить каталог", "Could not load catalog") if error else _("Компонентов не найдено", "No components found"),
+                error or _("В выбранной категории нет компонентов, соответствующих фильтрам.", "No components in this category match the filters."),
+                icon="fa5s.exclamation-circle" if error else "fa5s.box-open",
+                action=_("Повторить загрузку", "Retry loading") if error else "",
             )
-            empty.setObjectName("AIHubEmpty")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, empty)
+            if error:
+                pane.action.clicked.connect(lambda: self.refresh(force=True))
+            self._scroll_layout.insertWidget(0, pane, 1)
             return
 
         self._component_cards = []
@@ -1736,4 +1753,3 @@ class AIHubDialog(QDialog):
         if not task_id:
             return
         self.view_model.dispatch(CancelRunningInstall(task_id))
-

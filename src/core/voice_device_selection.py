@@ -45,6 +45,8 @@ class VoiceDeviceCatalog:
                 ordinal = int(record["ordinal"])
             except (KeyError, TypeError, ValueError):
                 continue
+            if ordinal < 0:
+                continue
             value = f"cuda:{ordinal}"
             name = str(record.get("name") or "").strip()
             self.cuda.append(DeviceChoice(value, f"{value} ({name})" if name else value, value))
@@ -52,12 +54,15 @@ class VoiceDeviceCatalog:
         adapters = self.hardware.get("adapters") or self.hardware.get("accelerators") or []
         self.dml: list[DeviceChoice] = []
         seen_values: set[str] = set()
+        seen_indices: set[int] = set()
         for adapter in adapters:
             if not isinstance(adapter, dict):
                 continue
             try:
                 index = int(adapter.get("dxgi_index", adapter.get("index")))
             except (TypeError, ValueError):
+                continue
+            if index < 0 or index in seen_indices:
                 continue
             luid = str(adapter.get("luid") or "").strip().lower()
             value = f"dml@{luid}" if re.fullmatch(r"[0-9a-f]{16}", luid) else f"dml:{index}"
@@ -66,9 +71,13 @@ class VoiceDeviceCatalog:
             if value in seen_values:
                 continue
             seen_values.add(value)
+            seen_indices.add(index)
             runtime_device = f"dml:{index}"
             name = str(adapter.get("name") or "GPU").strip()
             self.dml.append(DeviceChoice(value, f"{runtime_device} ({name})", runtime_device))
+
+        self.cuda.sort(key=lambda choice: int(choice.runtime_device.split(":")[1]))
+        self.dml.sort(key=lambda choice: int(choice.runtime_device.split(":")[1]))
 
         self.vendor = str(self.hardware.get("vendor") or "").strip().lower()
         if not self.vendor and self.cuda:
@@ -112,9 +121,8 @@ class VoiceDeviceCatalog:
                             else []
                         )
                     )
-                elif value == "dml":
-                    choices.append(DeviceChoice("dml", "dml", "dml"))
-                    choices.extend(self.dml)
+                elif value == "dml" or value.startswith(("dml:", "dml@")):
+                    choices.extend(self.dml or [DeviceChoice(value, value, value)])
                 else:
                     choices.append(DeviceChoice(value, value, value))
             unique = list({choice.value: choice for choice in choices}.values())
@@ -129,6 +137,13 @@ class VoiceDeviceCatalog:
                 },
             }
             default = str(options.get(f"default_{self.vendor}") or options.get("default") or "")
+            if default == "dml" and self.dml:
+                default = self.dml[0].value
+            elif default.startswith("dml:"):
+                default = next(
+                    (choice.value for choice in self.dml if choice.runtime_device == default),
+                    default,
+                )
             if default not in values:
                 default = values[0] if values else ""
             options["default"] = default
@@ -191,7 +206,7 @@ class VoiceDeviceCatalog:
                 raise ValueError(f"DirectML adapter {value} is no longer available")
             return choice.runtime_device
         if re.fullmatch(r"dml:\d+", value):
-            if self.hardware and not any(item.value == value for item in self.dml):
+            if self.hardware and not any(item.runtime_device == value for item in self.dml):
                 raise ValueError(f"DirectML adapter {value} is no longer available")
         return value
 
@@ -236,16 +251,24 @@ def migrate_voice_device_values(
             continue
         key = str(setting.get("key") or "")
         current = str(result.get(key) or "").strip().lower()
-        if current != "cuda":
+        if current not in ("cuda", "dml") and not re.fullmatch(r"dml:\d+", current):
             continue
         options = setting.get("options") or {}
         allowed = [str(value) for value in options.get("values") or []]
         if current in allowed:
             continue
-        exact_cuda = next(
-            (value for value in allowed if re.fullmatch(r"cuda:\d+", value)),
-            None,
-        )
-        if exact_cuda:
-            result[key] = exact_cuda
+        if current == "cuda":
+            replacement = next((value for value in allowed if re.fullmatch(r"cuda:\d+", value)), None)
+        else:
+            labels = options.get("display_labels") or {}
+            replacement = next(
+                (
+                    value for value in allowed
+                    if (re.fullmatch(r"dml:\d+", value) or value.startswith("dml@"))
+                    and (current == "dml" or str(labels.get(value) or value).split(" ", 1)[0] == current)
+                ),
+                None,
+            )
+        if replacement:
+            result[key] = replacement
     return result

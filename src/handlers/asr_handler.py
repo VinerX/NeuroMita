@@ -14,6 +14,7 @@ from utils import getTranslationVariant as _
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from handlers.asr_models.registry import create_recognizer, engine_classes
 from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
+from handlers.asr_input_gate import ASRInputGate
 from core.events import get_event_bus, Events, Event
 from core.performance_trace import performance_traces
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
@@ -74,12 +75,19 @@ def _on_ai_engine_event(event: Event):
     ev = str(data.get("event") or "")
     payload = data.get("data") if isinstance(data.get("data"), dict) else {}
 
+    if ev == "capture":
+        get_event_bus().emit(Events.Speech.ASR_CAPTURE_PROGRESS, payload)
+        return
+
     if ev == "text":
         text = str(payload.get("text") or "").strip()
         if text:
             trace = performance_traces().start(source="asr", attributes={"engine": str(payload.get("engine") or "remote")})
             trace.mark("asr.text_ready")
-            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text, "trace_id": trace.trace_id})
+            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {
+                "text": text, "trace_id": trace.trace_id,
+                **({"capture_context": payload["capture_context"]} if "capture_context" in payload else {}),
+            })
         return
 
     # Движок может поднять живое распознавание сам: при смене состава окружений
@@ -179,6 +187,26 @@ def register_asr_install_events() -> None:
 register_asr_engine_bridge()
 
 class SpeechRecognition:
+    _input_gate = ASRInputGate()
+
+    @staticmethod
+    def publish_input_gate() -> None:
+        if not SpeechRecognition._is_running or not SpeechRecognition._remote_asr_mode:
+            return
+        engine = SpeechRecognition._get_ai_engine()
+        if engine is None:
+            return
+        try:
+            future = engine.call("asr", "set_input_gate", SpeechRecognition._input_gate.snapshot())
+            def report_failure(done):
+                try:
+                    done.result()
+                except Exception as exc:
+                    logger.warning(f"ASR gate update failed: {format_exception(exc)}")
+            future.add_done_callback(report_failure)
+        except Exception as exc:
+            logger.warning(f"ASR gate update failed: {format_exception(exc)}")
+
     microphone_index = 0
     active = True
     _recognizer_type = "google"
@@ -400,7 +428,8 @@ class SpeechRecognition:
                             tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
                             return float(vad_model(tensor, sample_rate).item())
 
-                        async def transcribe_segment(audio: np.ndarray, sample_rate: int) -> None:
+                        async def transcribe_segment(audio: np.ndarray, sample_rate: int, context: dict | None = None) -> None:
+                            context = context or SpeechRecognition._input_gate.snapshot()
                             trace = performance_traces().start(
                                 source="asr",
                                 attributes={
@@ -412,8 +441,8 @@ class SpeechRecognition:
                                 with trace.span("asr.transcribe"):
                                     text = await inst.transcribe(audio, sample_rate)
                                 text = str(text or "").strip()
-                                if text:
-                                    await SpeechRecognition._handle_voice_message(text, trace_id=trace.trace_id)
+                                if text and SpeechRecognition._input_gate.valid(context):
+                                    await SpeechRecognition._handle_voice_message(text, trace_id=trace.trace_id, capture_context=context)
                                 else:
                                     performance_traces().finish(trace.trace_id, "empty")
                             except Exception as exc:
@@ -435,6 +464,10 @@ class SpeechRecognition:
                             is_active=lambda: SpeechRecognition.active,
                             speech_probability=speech_probability,
                             on_segment=transcribe_segment,
+                            input_gate=SpeechRecognition._input_gate,
+                            on_segment_context=transcribe_segment,
+                            background_transcription=True,
+                            on_activity=lambda data: get_event_bus().emit(Events.Speech.ASR_CAPTURE_PROGRESS, data),
                         )
                     else:
                         logger.error(
@@ -470,9 +503,12 @@ class SpeechRecognition:
         logger.info("Speech recognition loop stopped.")
 
     @staticmethod
-    async def _handle_voice_message(text: str, trace_id: str | None = None):
+    async def _handle_voice_message(text: str, trace_id: str | None = None, capture_context: dict | None = None):
         if text and text.strip():
-            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {'text': text.strip(), 'trace_id': trace_id})
+            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {
+                'text': text.strip(), 'trace_id': trace_id,
+                **({'capture_context': capture_context} if capture_context is not None else {}),
+            })
 
     @staticmethod
     def _get_ai_engine():
@@ -492,6 +528,7 @@ class SpeechRecognition:
             "engine_id": engine_id,
             "microphone_index": int(device_id or 0),
             "engine_settings": SpeechRecognition._engine_settings.get(engine_id, {}) or {},
+            "input_gate": {**SpeechRecognition._input_gate.snapshot(), "active": False},
             "vad": {
                 "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
                 "chunk_size": SpeechRecognition.CHUNK_SIZE,
@@ -505,6 +542,7 @@ class SpeechRecognition:
 
     @staticmethod
     def speech_recognition_start(device_id: int, loop) -> bool:
+        SpeechRecognition._input_gate.reset()
         with SpeechRecognition._start_lock:
             if SpeechRecognition._is_running:
                 SpeechRecognition.speech_recognition_stop()
@@ -593,6 +631,9 @@ class SpeechRecognition:
         if not SpeechRecognition._is_running or not SpeechRecognition._remote_asr_mode:
             return False
 
+        SpeechRecognition._input_gate.reset()
+        SpeechRecognition.publish_input_gate()
+
         eng = SpeechRecognition._get_ai_engine()
         if not eng:
             return False
@@ -637,6 +678,8 @@ class SpeechRecognition:
 
     @staticmethod
     def speech_recognition_stop():
+        SpeechRecognition._input_gate.reset()
+        SpeechRecognition.publish_input_gate()
         if not SpeechRecognition._is_running:
             return
 

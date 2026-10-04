@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +41,7 @@ from ui.windows.ai_hub.settings_presentation import (
 from utils import getTranslationVariant as _
 
 from .schema_renderer import SchemaForm
+from .status_widgets import SettingsStatusPane, StatusIcon
 
 
 class SettingsPanel(QWidget):
@@ -76,12 +79,30 @@ class SettingsPanel(QWidget):
 
         self._header = QLabel(_("Установленные модели", "Installed models"))
         self._header.setObjectName("AIHubSettingsListHeader")
-        ll.addWidget(self._header)
+        list_header = QHBoxLayout()
+        list_header.addWidget(self._header, 1)
+        self._list_spinner = StatusIcon(20)
+        self._list_spinner.set_status("fa5s.circle-notch", spinning=True)
+        list_header.addWidget(self._list_spinner)
+        self._list_count = QLabel()
+        self._list_count.setObjectName("AIHubSettingsListCount")
+        list_header.addWidget(self._list_count)
+        ll.addLayout(list_header)
 
         self._list = QListWidget()
         self._list.setObjectName("AIHubSettingsModelList")
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
-        ll.addWidget(self._list, 1)
+        self._list_stack = QStackedWidget()
+        self._list_stack.addWidget(self._list)
+        self._list_message = QLabel()
+        self._list_message.setObjectName("AIHubSettingsEmpty")
+        self._list_message.setWordWrap(True)
+        self._list_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._list_message.setContentsMargins(12, 12, 12, 12)
+        self._list_stack.addWidget(self._list_message)
+        ll.addWidget(self._list_stack, 1)
         root.addWidget(left, 0)
 
         # --- right: form host + actions
@@ -96,6 +117,8 @@ class SettingsPanel(QWidget):
         title_row.setSpacing(8)
         self._title = QLabel(_("Выберите модель", "Select a model"))
         self._title.setObjectName("AIHubSettingsTitle")
+        self._title.setWordWrap(True)
+        self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         title_row.addWidget(self._title, 1)
         self._dirty_dot = QLabel("●")
         self._dirty_dot.setObjectName("AIHubSettingsDirtyDot")
@@ -106,6 +129,7 @@ class SettingsPanel(QWidget):
         self._subtitle = QLabel("")
         self._subtitle.setObjectName("AIHubSettingsSubtitle")
         self._subtitle.setWordWrap(True)
+        self._subtitle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         rl.addWidget(self._subtitle)
 
         # scrollable form host
@@ -117,20 +141,59 @@ class SettingsPanel(QWidget):
 
         self._form = SchemaForm(on_change=self._on_form_changed)
         scroll.setWidget(self._form)
-        rl.addWidget(scroll, 1)
+        self._scroll = scroll
+        self._content = QStackedWidget()
+        self._content.setObjectName("AIHubSettingsContent")
+        self._content.addWidget(scroll)
+        self._state_pane = SettingsStatusPane()
+        self._state_pane.action.clicked.connect(self._on_state_action)
+        self._content.addWidget(self._state_pane)
+        rl.addWidget(self._content, 1)
 
         self._compile_card = QFrame()
         self._compile_card.setObjectName("AIHubSettingsCompileCard")
         compile_layout = QVBoxLayout(self._compile_card)
-        compile_layout.setContentsMargins(14, 12, 14, 12)
-        compile_layout.setSpacing(7)
-        compile_title = QLabel(_("Компиляция Fish Speech+", "Fish Speech+ compilation"))
-        compile_title.setObjectName("AIHubSettingsCompileTitle")
-        compile_layout.addWidget(compile_title)
-        self._compile_hint = QLabel("")
-        self._compile_hint.setObjectName("AIHubSettingsSubtitle")
-        self._compile_hint.setWordWrap(True)
-        compile_layout.addWidget(self._compile_hint)
+        compile_layout.setContentsMargins(16, 14, 16, 14)
+        compile_layout.setSpacing(9)
+        self._compile_title = QLabel(
+            _("GPU-компиляция Fish Speech+", "Fish Speech+ GPU compilation")
+        )
+        self._compile_title.setObjectName("AIHubSettingsCompileTitle")
+        compile_layout.addWidget(self._compile_title)
+        self._compile_description = QLabel(
+            _(
+                "torch.compile и Triton создают оптимизированные CUDA-ядра для выбранной видеокарты. "
+                "Для каждой видеокарты хранится отдельный кэш, общий для Fish Speech+ и Fish Speech+ + RVC.",
+                "torch.compile and Triton create optimized CUDA kernels for the selected GPU. "
+                "Each GPU has a separate cache shared by Fish Speech+ and Fish Speech+ + RVC.",
+            )
+        )
+        self._compile_description.setObjectName("AIHubSettingsCompileDescription")
+        self._compile_description.setWordWrap(True)
+        compile_layout.addWidget(self._compile_description)
+
+        target_box = QFrame()
+        target_box.setObjectName("AIHubSettingsCompileTarget")
+        target_layout = QVBoxLayout(target_box)
+        target_layout.setContentsMargins(12, 9, 12, 9)
+        target_layout.setSpacing(3)
+        self._compile_target_caption = QLabel(_("Целевая видеокарта", "Target GPU"))
+        self._compile_target_caption.setObjectName("AIHubSettingsCompileCaption")
+        target_layout.addWidget(self._compile_target_caption)
+        self._compile_target = QLabel("")
+        self._compile_target.setObjectName("AIHubSettingsCompileTargetValue")
+        self._compile_target.setWordWrap(True)
+        target_layout.addWidget(self._compile_target)
+        self._compile_status = QLabel("")
+        self._compile_status.setObjectName("AIHubSettingsCompileStatus")
+        self._compile_status.setWordWrap(True)
+        target_layout.addWidget(self._compile_status)
+        compile_layout.addWidget(target_box)
+
+        self._compile_cache_summary = QLabel("")
+        self._compile_cache_summary.setObjectName("AIHubSettingsCompileDescription")
+        self._compile_cache_summary.setWordWrap(True)
+        compile_layout.addWidget(self._compile_cache_summary)
         compile_actions = QHBoxLayout()
         self._btn_compile_docs = QPushButton(_("Документация", "Documentation"))
         self._btn_compile_docs.setObjectName("AIHubSecondary")
@@ -140,39 +203,33 @@ class SettingsPanel(QWidget):
         )
         compile_actions.addWidget(self._btn_compile_docs)
         compile_actions.addStretch(1)
-        self._btn_delete_compile = QPushButton(_("Удалить компиляцию", "Delete compilation"))
+        self._btn_delete_compile = QPushButton(_("Удалить весь кэш", "Delete all cache"))
         self._btn_delete_compile.setObjectName("AIHubDanger")
         self._btn_delete_compile.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_delete_compile.clicked.connect(self._on_delete_compilation)
         compile_actions.addWidget(self._btn_delete_compile)
-        self._btn_compile = QPushButton(_("Компилировать", "Compile"))
+        self._btn_compile = QPushButton(_("Скомпилировать", "Compile"))
         self._btn_compile.setObjectName("AIHubPrimary")
         self._btn_compile.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_compile.clicked.connect(lambda: self._view_model.dispatch(CompileAIHubModel()))
+        self._btn_compile.clicked.connect(self._on_compile)
         compile_actions.addWidget(self._btn_compile)
         compile_layout.addLayout(compile_actions)
         self._compile_card.setVisible(False)
-        rl.addWidget(self._compile_card)
+        self._form.set_slot_widgets({"fish_speech_compilation": self._compile_card})
 
-        # placeholder shown when no model is installed in the current category
-        self._empty = QLabel(
-            _(
-                "В этой категории нет установленных моделей.\nПерейдите в раздел «Установка» и установите модель.",
-                "No models installed in this category.\nGo to the «Install» section to add one.",
-            )
-        )
-        self._empty.setObjectName("AIHubSettingsEmpty")
-        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty.setWordWrap(True)
-        self._empty.setVisible(False)
-        rl.addWidget(self._empty)
-
-        # buttons
-        btn_row = QHBoxLayout()
+        self._footer = QWidget()
+        self._footer.setObjectName("AIHubSettingsFooter")
+        btn_row = QHBoxLayout(self._footer)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(10)
+        self._activity_icon = StatusIcon(20)
+        self._activity_icon.set_status("fa5s.circle-notch", spinning=True)
+        btn_row.addWidget(self._activity_icon)
         self._status_lbl = QLabel("")
         self._status_lbl.setObjectName("AIHubSettingsStatus")
+        self._status_lbl.setFixedHeight(24)
+        self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._footer.setFixedHeight(44)
         btn_row.addWidget(self._status_lbl, 1)
 
         self._btn_reset = QPushButton(_("Сбросить", "Reset"))
@@ -186,7 +243,7 @@ class SettingsPanel(QWidget):
         self._btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_save.clicked.connect(self._on_save)
         btn_row.addWidget(self._btn_save, 0)
-        rl.addLayout(btn_row)
+        rl.addWidget(self._footer)
 
         root.addWidget(right, 1)
 
@@ -195,11 +252,13 @@ class SettingsPanel(QWidget):
         self._set_actions_enabled(False)
 
     # ---------------------------------------------------------- public API
-    def apply_data(self, rows: list[dict[str, Any]], category: str | None) -> None:
+    def apply_data(self, rows: list[dict[str, Any]], category: str | None, *, loading: bool = False, error: str = "") -> None:
         self._view_model.dispatch(
             ApplyAIHubSettingsRows(
                 rows=immutable_payload(list(rows or [])),
                 category=category,
+                catalog_loading=loading,
+                catalog_error=error,
             )
         )
 
@@ -250,7 +309,7 @@ class SettingsPanel(QWidget):
             return
         self._rendering = True
         try:
-            self._form.set_values(dict(mutable_payload(self._view_model.state.values) or {}))
+            self._form.set_values(dict(mutable_payload(self._view_model.state.saved_values) or {}))
             self._form.clear_field_errors()
         finally:
             self._rendering = False
@@ -273,16 +332,21 @@ class SettingsPanel(QWidget):
         self._header.setText(_("Установленные модели", "Installed models"))
         self._btn_reset.setText(_("Сбросить", "Reset"))
         self._btn_save.setText(_("Сохранить", "Save"))
-        self._btn_delete_compile.setText(_("Удалить компиляцию", "Delete compilation"))
+        self._btn_delete_compile.setText(_("Удалить весь кэш", "Delete all cache"))
         self._btn_compile_docs.setText(_("Документация", "Documentation"))
-        if not self._current_id:
-            self._title.setText(_("Нет установленных моделей", "No installed models"))
-            self._empty.setText(
-                _(
-                    "В этой категории нет установленных моделей.\nПерейдите в раздел «Установка» и установите модель.",
-                    "No models installed in this category.\nGo to the «Install» section to add one.",
-                )
+        self._compile_title.setText(
+            _("GPU-компиляция Fish Speech+", "Fish Speech+ GPU compilation")
+        )
+        self._compile_description.setText(
+            _(
+                "torch.compile и Triton создают оптимизированные CUDA-ядра для выбранной видеокарты. "
+                "Для каждой видеокарты хранится отдельный кэш, общий для Fish Speech+ и Fish Speech+ + RVC.",
+                "torch.compile and Triton create optimized CUDA kernels for the selected GPU. "
+                "Each GPU has a separate cache shared by Fish Speech+ and Fish Speech+ + RVC.",
             )
+        )
+        self._compile_target_caption.setText(_("Целевая видеокарта", "Target GPU"))
+        self.render(self._view_model.state)
 
     # ---------------------------------------------------------- list
     def _rebuild_list(self, state: AIHubSettingsState) -> None:
@@ -292,6 +356,7 @@ class SettingsPanel(QWidget):
             self._list.clear()
             for cid, title in state.components:
                 item = QListWidgetItem(title)
+                item.setToolTip(title)
                 item.setData(Qt.ItemDataRole.UserRole, cid)
                 self._list.addItem(item)
 
@@ -315,12 +380,6 @@ class SettingsPanel(QWidget):
 
     def _set_empty_state(self) -> None:
         self._current_id = None
-        self._title.setText(_("Нет установленных моделей", "No installed models"))
-        self._subtitle.setText("")
-        self._dirty_dot.setVisible(False)
-        self._set_form_visible(False)
-        self._empty.setVisible(True)
-        self._set_actions_enabled(False)
 
     # ---------------------------------------------------------- selection
     def _on_selection_changed(self) -> None:
@@ -347,16 +406,25 @@ class SettingsPanel(QWidget):
         values = self._form.values()
         self._view_model.dispatch(SaveAIHubSettings(immutable_payload(values)))
 
+    def _on_compile(self) -> None:
+        self._view_model.dispatch(
+            CompileAIHubModel(immutable_payload(self._form.values()))
+        )
+
     def _on_reset(self) -> None:
         self._view_model.dispatch(ResetAIHubSettings())
 
     def _on_delete_compilation(self) -> None:
+        state = self._view_model.state
+        selected_device = self._selected_compile_device(state)
         answer = QMessageBox.question(
             self,
-            _("Удалить компиляцию?", "Delete compilation?"),
+            _("Удалить весь кэш компиляции?", "Delete all compilation cache?"),
             _(
-                "Будет удалён общий кеш Fish Speech+ и Fish Speech+ + RVC. При следующем запуске он будет создан заново.",
-                "The shared Fish Speech+ and Fish Speech+ + RVC cache will be deleted and rebuilt on next use.",
+                f"Будет удалён общий кэш TorchInductor/Triton для всех видеокарт, включая {selected_device}. "
+                "Fish Speech+ создаст его заново при следующей компиляции или запуске.",
+                f"The shared TorchInductor/Triton cache for every GPU, including {selected_device}, will be deleted. "
+                "Fish Speech+ will rebuild it during the next compilation or launch.",
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -366,11 +434,65 @@ class SettingsPanel(QWidget):
 
     def _on_form_changed(self) -> None:
         if not self._rendering:
-            self._view_model.dispatch(AIHubSettingsChanged())
+            self._view_model.dispatch(
+                AIHubSettingsChanged(immutable_payload(self._form.values()))
+            )
 
     def _set_form_visible(self, visible: bool) -> None:
-        for w in self.findChildren(QScrollArea, "AIHubSettingsScroll"):
-            w.setVisible(visible)
+        self._content.setCurrentWidget(self._scroll if visible else self._state_pane)
+
+    def _on_state_action(self) -> None:
+        if self._view_model.state.load_error and self._current_id:
+            self._view_model.dispatch(SelectAIHubSettingsComponent(self._current_id))
+        else:
+            self.request_install_view.emit()
+
+    def _render_content_state(self, state: AIHubSettingsState) -> None:
+        has_form = bool(state.selected_component_id and state.schema and not state.loading and not state.load_error)
+        self._set_form_visible(has_form)
+        self._footer.setVisible(has_form)
+        self._list_spinner.setVisible(state.catalog_loading)
+        self._list_count.setText(str(len(state.components)))
+        self._list_count.setVisible(bool(state.components) or not state.catalog_loading)
+        self._list_stack.setCurrentWidget(self._list if state.components else self._list_message)
+        self._list_message.setText(
+            _("Проверяем установленные модели…", "Checking installed models…")
+            if state.catalog_loading else _("Нет установленных моделей", "No installed models")
+        )
+        self._subtitle.setText(
+            _("Измените параметры и сохраните настройки.", "Adjust the parameters and save your changes.")
+            if has_form else _("Настройки установленных AI-компонентов", "Settings for installed AI components")
+        )
+        if has_form:
+            return
+        pane = self._state_pane
+        if state.loading:
+            pane.present(_("Загружаем параметры…", "Loading parameters…"),
+                         _("Получаем настройки выбранной модели.", "Fetching settings for the selected model."),
+                         icon="fa5s.circle-notch", loading=True)
+        elif state.catalog_loading and not state.components:
+            pane.present(_("Загружаем модели…", "Loading models…"),
+                         _("Проверяем установленные компоненты. Их параметры появятся здесь.",
+                           "Checking installed components. Their settings will appear here."),
+                         icon="fa5s.circle-notch", loading=True)
+        elif state.load_error or (state.catalog_error and not state.components):
+            pane.present(_("Не удалось загрузить параметры", "Unable to load settings"),
+                         state.load_error or state.catalog_error, icon="fa5s.exclamation-circle",
+                         action=_("Повторить", "Retry") if state.load_error else _("К компонентам", "View components"))
+        elif not state.components:
+            pane.present(_("Пока нет установленных моделей", "No models installed yet"),
+                         _("Установите модель в этой категории, чтобы настроить её параметры.",
+                           "Install a model in this category to configure its parameters."),
+                         icon="fa5s.box-open", action=_("К компонентам", "View components"))
+        elif not state.selected_component_id:
+            pane.present(_("Выберите модель", "Select a model"),
+                         _("Выберите установленную модель в списке слева.", "Select an installed model from the list on the left."),
+                         icon="fa5s.mouse-pointer")
+        else:
+            pane.present(_("Дополнительных параметров нет", "No additional parameters"),
+                         _("Эта модель не предоставляет дополнительных настроек.",
+                           "This model does not expose additional settings."),
+                         icon="fa5s.sliders-h")
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         self._btn_save.setEnabled(enabled)
@@ -450,6 +572,57 @@ class SettingsPanel(QWidget):
             decorated.append(cloned)
         return decorated
 
+    @staticmethod
+    def _selected_compile_device(state: AIHubSettingsState) -> str:
+        values = dict(mutable_payload(state.values) or {})
+        key = "fsprvc_fsp_device" if state.selected_component_id == "tts:medium+low" else "device"
+        device = str(values.get(key) or "cuda:0").strip().lower()
+        return "cuda:0" if device == "cuda" else device
+
+    @staticmethod
+    def _compile_target_label(target: dict[str, Any]) -> str:
+        device = str(target.get("device") or "").strip()
+        name = str(target.get("gpu_name") or "").strip()
+        capability = str(target.get("compute_capability") or "").strip()
+        label = device
+        if name:
+            label += f" — {name}"
+        if capability:
+            label += f" (SM {capability})"
+        return label
+
+    def _selected_compile_target(
+        self,
+        device: str,
+        compiled_target: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if compiled_target:
+            return dict(compiled_target)
+        try:
+            ordinal = int(device.partition(":")[2])
+        except (TypeError, ValueError):
+            return {"device": device}
+        cuda = dict(self._hardware_snapshot().get("cuda") or {})
+        for item in cuda.get("devices") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                item_ordinal = int(item.get("ordinal"))
+            except (TypeError, ValueError):
+                continue
+            if item_ordinal != ordinal:
+                continue
+            capability = str(item.get("compute_capability") or "").strip().lower()
+            if capability.startswith("sm_") and capability[3:].isdigit():
+                digits = capability[3:]
+                capability = f"{digits[:-1]}.{digits[-1]}" if len(digits) > 1 else digits
+            return {
+                "device": device,
+                "gpu_name": str(item.get("name") or ""),
+                "compute_capability": capability,
+            }
+        return {"device": device}
+
     def render(self, state: AIHubSettingsState) -> None:
         self._rendering = True
         try:
@@ -460,7 +633,7 @@ class SettingsPanel(QWidget):
             self._current_id = state.selected_component_id or None
             title = next(
                 (title for cid, title in state.components if cid == state.selected_component_id),
-                _("Выберите модель", "Select a model"),
+                _("Параметры моделей", "Model parameters"),
             )
             self._title.setText(title)
 
@@ -469,18 +642,12 @@ class SettingsPanel(QWidget):
                 schema = self._decorate_schema_for_display(list(mutable_payload(state.schema) or []))
                 values = dict(mutable_payload(state.values) or {})
                 self._form.clear_field_errors()
-                if schema:
+                if schema != getattr(self, "_rendered_schema", None):
                     self._form.set_schema(schema)
-                    self._form.set_values(values)
-                    self._empty.setVisible(False)
-                    self._set_form_visible(True)
-                else:
-                    self._set_form_visible(False)
-                    self._empty.setText(
-                        state.status_text
-                        or _("У этой модели нет настроек.", "This model has no settings.")
-                    )
-                    self._empty.setVisible(True)
+                    self._rendered_schema = schema
+                self._form.set_values(values)
+
+            self._render_content_state(state)
 
             if state.errors_revision != self._errors_revision:
                 self._errors_revision = state.errors_revision
@@ -490,25 +657,80 @@ class SettingsPanel(QWidget):
                     self._form.set_field_error(str(key), str(message))
 
             self._dirty_dot.setVisible(bool(state.dirty))
-            self._status_lbl.setText(str(state.status_text or ""))
+            self._status_lbl.setText(str(state.status_text or "") if state.dirty or state.save_status != "idle" or state.compile_busy else "")
+            self._status_lbl.setToolTip(str(state.status_text or ""))
+            color = "#a3e635" if state.save_status in {"saving", "saved"} else "#bca9bb"
+            if state.save_status == "error":
+                color = "#ffb4b4"
+            self._activity_icon.set_status(
+                "fa5s.circle-notch" if state.saving or state.compile_busy else "fa5s.check-circle" if state.save_status == "saved" else "fa5s.exclamation-circle" if state.save_status == "error" else "fa5s.circle",
+                spinning=bool(state.saving or state.compile_busy), color=color,
+            )
             self._list.setEnabled(not state.saving)
-            enabled = bool(state.schema) and not state.loading and not state.saving
-            self._set_actions_enabled(enabled)
-            self._compile_card.setVisible(bool(state.compile_available))
+            self._form.setEnabled(not state.saving and not state.compile_busy)
+            enabled = bool(state.schema) and not state.loading and not state.saving and not state.load_error and not state.compile_busy
+            self._set_actions_enabled(enabled and state.dirty)
+            self._compile_card.setVisible(bool(state.compile_available and not state.loading and not state.load_error))
             if state.compile_available:
                 cache_exists = bool(state.compile_cache_exists)
                 size_mb = int(state.compile_cache_size_bytes or 0) / (1024 * 1024)
-                self._compile_hint.setText(
-                    _(
-                        f"Общий кеш Fish Speech+ готов: {size_mb:.0f} МБ. Используется обеими моделями."
-                        if cache_exists else "Общий кеш ещё не создан. Он будет использоваться Fish Speech+ и Fish Speech+ + RVC.",
-                        f"Shared Fish Speech+ cache is ready: {size_mb:.0f} MB. Both models use it."
-                        if cache_exists else "The shared cache has not been created yet. Fish Speech+ and Fish Speech+ + RVC will both use it.",
-                    )
+                selected_device = self._selected_compile_device(state)
+                targets = [
+                    dict(item)
+                    for item in (mutable_payload(state.compile_targets) or [])
+                    if isinstance(item, dict) and str(item.get("device") or "").strip()
+                ]
+                target_by_device = {
+                    ("cuda:0" if str(item.get("device")).strip().lower() == "cuda" else str(item.get("device")).strip().lower()): item
+                    for item in targets
+                }
+                selected_target = target_by_device.get(selected_device)
+                selected_compiled = selected_target is not None
+                selected_label = self._compile_target_label(
+                    self._selected_compile_target(selected_device, selected_target)
                 )
+                self._compile_target.setText(selected_label)
+                if selected_compiled:
+                    self._compile_status.setText(
+                        _(
+                            "● Используется старый общий кэш. Перекомпиляция создаст отдельный кэш этой видеокарты.",
+                            "● Using the legacy shared cache. Recompilation will create a separate cache for this GPU.",
+                        )
+                        if selected_target.get("cache_layout") == "shared"
+                        else _("● Кэш для этой видеокарты готов", "● Cache for this GPU is ready")
+                    )
+                else:
+                    self._compile_status.setText(
+                        _("○ Для этой видеокарты компиляция ещё не выполнена", "○ This GPU has not been compiled yet")
+                    )
+
+                if targets:
+                    compiled = "; ".join(self._compile_target_label(item) for item in targets)
+                    details_ru = f"Готовые GPU-кэши: {compiled}. Общий размер: {size_mb:.0f} МБ."
+                    details_en = f"Ready GPU caches: {compiled}. Total size: {size_mb:.0f} MB."
+                elif cache_exists:
+                    details_ru = (
+                        f"Общий кеш: {size_mb:.0f} МБ. Он создан старой версией, поэтому устройство неизвестно. "
+                        "Перекомпилируйте для выбранной видеокарты."
+                    )
+                    details_en = (
+                        f"Shared cache: {size_mb:.0f} MB. It was created by an older version, so its device is unknown. "
+                        "Compile it again for the selected GPU."
+                    )
+                else:
+                    details_ru = "Кэши ещё не созданы. Для каждой видеокарты будет свой кэш, общий для обеих моделей Fish Speech+."
+                    details_en = "No caches have been created yet. Each GPU will have its own cache shared by both Fish Speech+ models."
+                self._compile_cache_summary.setText(_(details_ru, details_en))
                 self._btn_compile.setText(
-                    _("Перекомпилировать", "Recompile")
-                    if cache_exists else _("Компилировать", "Compile")
+                    _(
+                        f"Перекомпилировать для {selected_device}",
+                        f"Recompile for {selected_device}",
+                    )
+                    if selected_compiled
+                    else _(
+                        f"Скомпилировать для {selected_device}",
+                        f"Compile for {selected_device}",
+                    )
                 )
                 self._btn_delete_compile.setVisible(cache_exists)
                 self._btn_compile.setEnabled(not state.compile_busy)
