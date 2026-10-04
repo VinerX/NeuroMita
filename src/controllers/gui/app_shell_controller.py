@@ -353,7 +353,10 @@ class AppShellController:
             if method == "API":
                 from services.contracts import RemoteVoiceService
                 remote = services().get_optional(RemoteVoiceService)
-                voice_initialized = bool(use_voice and remote and remote.status().verified)
+                from services.contracts import CharacterRegistry
+                registry = services().get_optional(CharacterRegistry)
+                character_id = registry.current_id() if registry else None
+                voice_initialized = bool(use_voice and remote and remote.status(character_id=character_id).verified)
 
             rag = rag_readiness()
             return {

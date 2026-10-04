@@ -436,6 +436,7 @@ class _ViewModelFactory:
             events=self._presentation.events,
             remote_service=services().get(RemoteVoiceService),
             playback_volume=lambda: use(SettingsService).get("VOICEOVER_LOCAL_VOLUME", 100),
+            character_registry=lambda: use(CharacterRegistry),
             open_settings=lambda category: host.show_settings_category(
                 category,
                 force=True,

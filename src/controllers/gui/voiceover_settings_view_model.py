@@ -25,6 +25,7 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
         events,
         remote_service,
         playback_volume: Callable[[], int] | None = None,
+        character_registry=None,
         open_settings: Callable[[str], None] | None = None,
         parent=None,
     ) -> None:
@@ -36,6 +37,7 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
             remote_service, self,
             playback_state=lambda active: events.publish(UiTopic.AUDIO_MITA_SPEAKING_WINDOW, {"active": active}),
             playback_volume=playback_volume,
+            character_registry=character_registry,
         )
 
     def close(self):

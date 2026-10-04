@@ -962,7 +962,10 @@ class VoiceoverGuiController(BaseController):
         if method == "API":
             from services.contracts import RemoteVoiceService
             remote = services().get_optional(RemoteVoiceService)
-            status = remote.status() if remote else None
+            from services.contracts import CharacterRegistry
+            registry = services().get_optional(CharacterRegistry)
+            character_id = registry.current_id() if registry else None
+            status = remote.status(character_id=character_id) if remote else None
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
                 "category": "voice",
                 "state": "green" if status and status.verified else "warn" if status and status.configured else "red",

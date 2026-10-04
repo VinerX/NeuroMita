@@ -4,6 +4,12 @@ from core.remote_voice import RemoteVoicePreset
 
 
 @dataclass(frozen=True, slots=True)
+class VoiceCharacter:
+    character_id: str
+    display_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class LoadRemoteVoice:
     pass
 
@@ -34,3 +40,4 @@ class DeleteRemoteVoice:
 class PreviewRemoteVoice:
     preset: RemoteVoicePreset
     text: str
+    character_id: str | None = None

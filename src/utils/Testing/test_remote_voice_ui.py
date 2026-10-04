@@ -21,6 +21,9 @@ from ui.settings.voiceover_settings.remote_api import RemoteVoiceSettingsWidget
 from ui.settings.voiceover_settings.ui import build_voiceover_settings_ui
 
 
+_APP = None
+
+
 def settle(app, vm):
     deadline = time.monotonic() + 5
     while vm.state.busy and time.monotonic() < deadline:
@@ -31,10 +34,15 @@ def settle(app, vm):
 
 @pytest.fixture
 def panel(tmp_path):
-    app = QApplication.instance() or QApplication([])
+    global _APP
+    _APP = QApplication.instance() or QApplication([])
+    app = _APP
+    app.setQuitOnLastWindowClosed(False)
     service = DefaultRemoteVoiceService(repository=RemoteVoiceRepository(tmp_path / "profiles.json"),
         registry=HttpClientRegistry(), client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(401))))
-    vm = RemoteVoiceSettingsViewModel(service)
+    registry = SimpleNamespace(all_ids=lambda: ["Kind", "Cappie"],
+        display_name_of=lambda cid: {"Kind": "Kind Mita", "Cappie": "Cappie"}[cid], current_id=lambda: "Kind")
+    vm = RemoteVoiceSettingsViewModel(service, character_registry=lambda: registry)
     widget = RemoteVoiceSettingsWidget(vm)
     settle(app, vm)
     yield app, service, vm, widget
@@ -65,6 +73,7 @@ def test_profile_switch_saves_draft_without_network(panel):
     original_id = service.configuration().active_id
     widget.name.setText("Мой голос")
     widget.key.setText("private-key")
+    widget.voice.setText("a" * 32)
     widget.add_button.click()
     settle(app, vm)
     assert len(service.configuration().presets) == 2
@@ -73,6 +82,7 @@ def test_profile_switch_saves_draft_without_network(panel):
     settle(app, vm)
     assert widget.name.text() == "Мой голос"
     assert widget.key.text() == "private-key"
+    assert widget.voice.text() == "a" * 32
     assert not service.status().verified
 
 
@@ -117,3 +127,58 @@ def test_preview_playback_failure_releases_file_and_speaking_state(panel, tmp_pa
             asyncio.run(vm._preview("test"))
     assert transitions == [True, False]
     assert not path.exists()
+
+
+def test_avatar_tabs_keep_independent_drafts_and_save_together(panel):
+    app, service, vm, widget = panel
+    assert widget.voice_tabs.count() == 3
+    assert widget.voice_tabs.height() >= 80
+    assert widget.voice_tabs.tabData(widget.voice_tabs.currentIndex()) == "Kind"
+    widget.voice.setText("a" * 32)
+    widget.voice_display_name.setText("Добрая · спокойный")
+    widget.voice_tabs.setCurrentIndex(2)
+    assert widget.voice.text() == ""
+    assert widget.voice_display_name.text() == ""
+    widget.voice.setText("b" * 32)
+    widget.voice_display_name.setText("Кэппи · мягкий")
+    widget.voice_tabs.setCurrentIndex(1)
+    assert widget.voice.text() == "a" * 32
+    assert widget.voice_display_name.text() == "Добрая · спокойный"
+    widget.save_button.click()
+    settle(app, vm)
+    assert not vm.state.error
+    assert service.configuration().active.voice_for("Kind") == "a" * 32
+    assert service.configuration().active.voice_for("Cappie") == "b" * 32
+    assert service.configuration().active.voice_id == ""
+    assert service.configuration().active.character_voices[0].display_name == "Добрая · спокойный"
+
+
+def test_preview_uses_selected_tab_and_cleans_file(panel, tmp_path):
+    app, service, vm, widget = panel
+    path = tmp_path / "preview.wav"
+    path.write_bytes(b"audio")
+    widget.voice_tabs.setCurrentIndex(2)
+    with patch.object(service, "synthesize", new_callable=AsyncMock, return_value=str(path)) as synthesize, \
+         patch("handlers.audio_handler.AudioHandler.handle_voice_file", new_callable=AsyncMock):
+        widget.preview_button.click()
+        settle(app, vm)
+    synthesize.assert_awaited_once_with(widget.sample.toPlainText(), character_id="Cappie")
+    assert not path.exists()
+
+
+def test_painted_tabs_support_mouse_keyboard_and_finish_animation(panel):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    app, service, vm, widget = panel
+    widget.resize(700, 760)
+    widget.show()
+    app.processEvents()
+    tabs = widget.voice_tabs
+    QTest.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(2).center())
+    assert tabs.tabData(tabs.currentIndex()) == "Cappie"
+    QTest.qWait(270)
+    assert abs(tabs.activePosition - 2) < 0.01
+    QTest.keyClick(tabs, Qt.Key.Key_Home)
+    assert tabs.tabData(tabs.currentIndex()) is None
+    QTest.keyClick(tabs, Qt.Key.Key_Right)
+    assert tabs.tabData(tabs.currentIndex()) == "Kind"

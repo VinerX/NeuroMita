@@ -8,6 +8,7 @@ from core.unity_installation import find_unity_executable, unity_install_dir
 from services.contracts import (
     CharacterEnvironmentContextService,
     CharacterEnvironmentSnapshot,
+    CharacterRegistry,
     InstallableCatalogService,
     LocalVoiceService,
     RemoteVoiceService,
@@ -204,7 +205,8 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             model_name = "Telegram voice"
         elif voice_method.lower() == "api":
             remote = services().get_optional(RemoteVoiceService)
-            status = remote.status() if remote else None
+            registry = services().get_optional(CharacterRegistry)
+            status = remote.status(character_id=registry.current_id() if registry else None) if remote else None
             model_id = "api:fish_audio" if status and status.configured else ""
             model_name = f"{status.provider_name} / {status.model}" if status else "API voice"
             installed = bool(status and status.configured)

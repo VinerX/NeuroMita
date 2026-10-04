@@ -114,6 +114,8 @@ class AudioController(AudioStateService):
 
         character_id = data.get("character_id")
         voice_profile = data.get("voice_profile")
+        if not character_id and isinstance(voice_profile, dict):
+            character_id = voice_profile.get("character_id")
 
         speaker = data.get("speaker")
         if not speaker:
@@ -254,7 +256,7 @@ class AudioController(AudioStateService):
         try:
             with perf_span(trace_id, "tts.synthesis", method=method.lower()):
                 if method == "API":
-                    result_path = await use(RemoteVoiceService).synthesize(original_text)
+                    result_path = await use(RemoteVoiceService).synthesize(original_text, character_id=character_id)
                 else:
                     result_path = await use(LocalVoiceService).synthesize(
                         voice_text,

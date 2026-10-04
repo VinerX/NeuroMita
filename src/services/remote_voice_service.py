@@ -11,7 +11,7 @@ import httpx
 
 from core.app_paths import base_dir, settings_path
 from core.networking import HttpClientRegistry, shared_http_client_registry
-from core.remote_voice import RemoteVoiceConfiguration, RemoteVoiceError, RemoteVoicePreset, RemoteVoiceStatus
+from core.remote_voice import RemoteCharacterVoice, RemoteVoiceConfiguration, RemoteVoiceError, RemoteVoicePreset, RemoteVoiceStatus
 from handlers.remote_voice.fish_audio import FishAudioProvider
 from main_logger import logger
 from presets.remote_voice_templates import REMOTE_VOICE_TEMPLATES, remote_voice_template
@@ -42,7 +42,7 @@ class DefaultRemoteVoiceService(RemoteVoiceService):
                 self._config = replace(loaded, presets=tuple(self._normalize(p) for p in loaded.presets))
             return self._config
 
-    def _normalize(self, preset, *, require_ready=False):
+    def _normalize(self, preset):
         try:
             template = remote_voice_template(preset.template_id)
         except ValueError:
@@ -52,12 +52,45 @@ class DefaultRemoteVoiceService(RemoteVoiceService):
             raise RemoteVoiceError("Укажите название профиля (до 80 символов).", code="name.invalid")
         if preset.model not in template.models:
             raise RemoteVoiceError("Выберите поддерживаемую модель озвучки.", code="model.invalid")
-        return self._providers[template.id].normalize(replace(preset, name=name), require_ready=require_ready)
+        provider = self._providers[template.id]
+        preset = provider.normalize(replace(preset, name=name, voice_display_name=self._voice_name(preset.voice_display_name)), require_ready=False)
+        voices = []
+        ids = set()
+        for voice in preset.character_voices:
+            character_id = voice.character_id
+            if not isinstance(character_id, str) or not character_id.strip() or any(ord(c) < 32 for c in character_id) or character_id in ids:
+                raise RemoteVoiceError("Некорректное назначение голоса персонажу.", code="character.invalid")
+            ids.add(character_id)
+            normalized = provider.normalize(replace(preset, voice_id=voice.voice_id), require_ready=False)
+            display_name = self._voice_name(voice.display_name)
+            if normalized.voice_id or display_name:
+                voices.append(RemoteCharacterVoice(character_id, normalized.voice_id, display_name))
+        return replace(preset, character_voices=tuple(voices))
+
+    @staticmethod
+    def _voice_name(value):
+        if not isinstance(value, str) or len(value.strip()) > 80 or any(ord(c) < 32 for c in value):
+            raise RemoteVoiceError("Название голоса должно содержать до 80 символов без переносов строк.", code="voice_name.invalid")
+        return value.strip()
+
+    def _resolve(self, preset, character_id):
+        resolved = replace(preset, voice_id=preset.voice_for(character_id), character_voices=(), voice_display_name="")
+        return self._providers[preset.template_id].normalize(resolved, require_ready=True)
+
+    def _ready_voices(self, presets):
+        ready = set()
+        for preset in presets:
+            for character_id in (None, *(v.character_id for v in preset.character_voices)):
+                try:
+                    ready.add(self._resolve(preset, character_id))
+                except RemoteVoiceError:
+                    continue
+        return ready
 
     def _store(self, config):
         self._repository.save(config)
         self._config = config
-        self._verified.intersection_update(config.presets)
+        self._verified.intersection_update(self._ready_voices(config.presets))
         logger.info("[RemoteVoice] Configuration saved; presets=%d; credentials=<redacted>", len(config.presets))
         return config
 
@@ -101,23 +134,30 @@ class DefaultRemoteVoiceService(RemoteVoiceService):
             active_id = remaining[0].id if config.active_id == preset_id else config.active_id
             return self._store(RemoteVoiceConfiguration(active_id, remaining))
 
-    def status(self):
+    def status(self, *, character_id=None):
         try:
             if self._closed:
                 return RemoteVoiceStatus(False, False, "API", "")
-            preset = self._normalize(self.configuration().active, require_ready=True)
+            active = self.configuration().active
+            if character_id is not None:
+                ready = {self._resolve(active, character_id)}
+            else:
+                ready = self._ready_voices((active,))
+            if not ready:
+                return RemoteVoiceStatus(False, False, "API", "")
+            preset = next(iter(ready))
             template = remote_voice_template(preset.template_id)
             with self._lock:
-                verified = preset in self._verified
+                verified = bool(ready.intersection(self._verified))
             return RemoteVoiceStatus(True, verified, template.name, preset.model)
         except RemoteVoiceError:
             return RemoteVoiceStatus(False, False, "API", "")
 
-    def _synthesize(self, text, cancelled):
+    def _synthesize(self, text, cancelled, character_id):
         from utils import process_text_to_voice
         if not isinstance(text, str) or not text.strip():
             raise RemoteVoiceError("Введите текст для озвучки.", code="text.empty")
-        preset = self._normalize(self.configuration().active, require_ready=True)
+        preset = self._resolve(self.configuration().active, character_id)
         template = remote_voice_template(preset.template_id)
         text = process_text_to_voice(text)
         if not any(char.isalpha() for char in text):
@@ -127,11 +167,11 @@ class DefaultRemoteVoiceService(RemoteVoiceService):
                 raise RemoteVoiceError("Сервис API озвучки закрыт.", code="service.closed")
             self._requests.add(cancelled)
         started = time.monotonic()
-        logger.info("[RemoteVoice] Synthesis started; provider=%s; model=%s; chars=%d; credentials=<redacted>", template.id, preset.model, len(text))
+        logger.info("[RemoteVoice] Synthesis started; provider=%s; model=%s; character=%r; chars=%d; credentials=<redacted>", template.id, preset.model, character_id, len(text))
         try:
             path = self._providers[template.id].synthesize(text, preset, template, self._output_dir, cancelled)
             with self._lock:
-                if not cancelled.is_set() and preset in self.configuration().presets:
+                if not cancelled.is_set() and preset in self._ready_voices(self.configuration().presets):
                     self._verified.add(preset)
             logger.info("[RemoteVoice] Synthesis complete; provider=%s; elapsed=%.2fs", template.id, time.monotonic() - started)
             return path
@@ -149,9 +189,9 @@ class DefaultRemoteVoiceService(RemoteVoiceService):
             with self._lock:
                 self._requests.discard(cancelled)
 
-    async def synthesize(self, text):
+    async def synthesize(self, text, *, character_id=None):
         cancelled = threading.Event()
-        task = asyncio.create_task(asyncio.to_thread(self._synthesize, text, cancelled))
+        task = asyncio.create_task(asyncio.to_thread(self._synthesize, text, cancelled, character_id))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:

@@ -24,6 +24,17 @@ QWidget#RemoteVoiceWorkspace QPushButton:hover { border-color: {accent}; }
 QWidget#RemoteVoiceWorkspace QPushButton:disabled {
     background: {btn_disabled_bg}; color: {btn_disabled_fg}; border-color: {panel_border};
 }
+QWidget#RemoteVoiceWorkspace QLabel#RemoteVoiceTitle {
+    font-size: 14px; font-weight: 600; color: {text};
+}
+QWidget#CharacterVoiceEditor { background: transparent; }
+QWidget#CharacterVoiceEditor QLineEdit { border-radius: 10px; }
+QWidget#CharacterVoiceEditor QPushButton#RemoteVoiceIconButton { border-radius: 12px; }
+QToolButton#CharacterVoiceScrollButton {
+    background: {control_bg}; border: 1px solid {panel_border}; border-radius: 10px;
+}
+QToolButton#CharacterVoiceScrollButton:hover { background: {chip_hover}; }
+QToolButton#CharacterVoiceScrollButton:disabled { background: transparent; border: none; }
 QWidget#CharacterSettingsWorkspace, QWidget#CharacterSettingsWorkspace QLabel,
 QWidget#CharacterSettingsWorkspace QLineEdit, QWidget#CharacterSettingsWorkspace QComboBox,
 QWidget#CharacterSettingsWorkspace QPushButton, QWidget#CharacterSettingsWorkspace QListWidget,

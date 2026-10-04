@@ -30,8 +30,8 @@ def test_api_reuses_delivery_and_releases_files(tmp_path, connected, task_uid, c
     services = {RemoteVoiceService: remote, GameLinkService: game}
     with patch("controllers.audio_controller.use", side_effect=services.__getitem__), \
          patch("controllers.audio_controller.AudioHandler.handle_voice_file", new_callable=AsyncMock) as play:
-        asyncio.run(controller._synthesize_and_deliver("prepared", "original", task_uid, method="API"))
-    remote.synthesize.assert_awaited_once_with("original")
+        asyncio.run(controller._synthesize_and_deliver("prepared", "original", task_uid, character_id="Kind", method="API"))
+    remote.synthesize.assert_awaited_once_with("original", character_id="Kind")
     assert bool(play.await_count) == expect_play
     if expect_play:
         assert play.call_args.kwargs["volume"] == 125

@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from core.networking import HttpClientRegistry
-from core.remote_voice import RemoteVoiceError
+from core.remote_voice import RemoteCharacterVoice, RemoteVoiceError
 from services.remote_voice_repository import RemoteVoiceRepository
 from services.remote_voice_service import DefaultRemoteVoiceService
 
@@ -195,3 +195,83 @@ def test_bad_repository_has_safe_error(tmp_path):
     with pytest.raises(RemoteVoiceError) as error:
         RemoteVoiceRepository(path).load()
     assert SECRET not in str(error.value)
+
+
+def test_character_voices_are_routed_independently(service_factory):
+    references = []
+    kind_voice = "a" * 32
+    cappie_voice = "b" * 32
+
+    def respond(request):
+        references.append(json.loads(request.content)["reference_id"])
+        return httpx.Response(200, content=b"\x00\x00")
+
+    service = service_factory(respond)
+    service.save_preset(replace(service.configuration().active, character_voices=(
+        RemoteCharacterVoice("Kind", kind_voice), RemoteCharacterVoice("Cappie", cappie_voice),
+    )))
+
+    async def run():
+        await asyncio.gather(service.synthesize("Привет", character_id="Kind"),
+                             service.synthesize("Привет", character_id="Cappie"))
+
+    asyncio.run(run())
+    assert sorted(references) == [kind_voice, cappie_voice]
+    assert service.status(character_id="Kind").verified
+    assert service.status(character_id="Cappie").verified
+    assert not service.status(character_id="Crazy").verified
+    asyncio.run(service.synthesize("Привет", character_id="Crazy"))
+    assert references[-1] == VOICE_ID
+
+
+def test_individual_voice_without_default_and_verification_isolation(service_factory):
+    service = service_factory(lambda request: httpx.Response(200, content=b"\x00\x00"))
+    service.save_preset(replace(service.configuration().active, voice_id="", character_voices=(
+        RemoteCharacterVoice("Kind", "a" * 32), RemoteCharacterVoice("Cappie", "b" * 32),
+    )))
+    assert service.status().configured
+    assert service.status(character_id="Kind").configured
+    assert not service.status(character_id="Crazy").configured
+    with pytest.raises(RemoteVoiceError):
+        asyncio.run(service.synthesize("Привет", character_id="Crazy"))
+    asyncio.run(service.synthesize("Привет", character_id="Kind"))
+    service.save_preset(replace(service.configuration().active, character_voices=(
+        RemoteCharacterVoice("Kind", "a" * 32), RemoteCharacterVoice("Cappie", "c" * 32),
+    )))
+    assert service.status(character_id="Kind").verified
+    assert not service.status(character_id="Cappie").verified
+
+
+def test_assignments_persist_and_v1_default_migrates(service_factory, tmp_path):
+    service = service_factory(lambda request: httpx.Response(200))
+    service.save_preset(replace(service.configuration().active, character_voices=(
+        RemoteCharacterVoice("Kind", "https://fish.audio/m/" + "A" * 32),
+    )))
+    config = RemoteVoiceRepository(tmp_path / "profiles.json").load()
+    assert config.active.character_voices == (RemoteCharacterVoice("Kind", "a" * 32),)
+    assert config.active.voice_id == VOICE_ID
+    data = json.loads((tmp_path / "profiles.json").read_text())
+    assert data["version"] == 3
+    data["version"] = 1
+    for preset in data["presets"]:
+        preset.pop("character_voices")
+        preset.pop("voice_display_name")
+    (tmp_path / "profiles.json").write_text(json.dumps(data))
+    migrated = RemoteVoiceRepository(tmp_path / "profiles.json").load()
+    assert migrated.active.voice_id == VOICE_ID
+    assert migrated.active.character_voices == ()
+
+
+def test_voice_display_names_persist_without_affecting_synthesis(service_factory, tmp_path):
+    references = []
+    service = service_factory(lambda request: references.append(json.loads(request.content)["reference_id"]) or httpx.Response(200, content=b"\x00\x00"))
+    service.save_preset(replace(service.configuration().active, voice_display_name="Общий · основной",
+        character_voices=(RemoteCharacterVoice("Kind", "a" * 32, "Добрая · спокойный"),)))
+    asyncio.run(service.synthesize("Привет", character_id="Kind"))
+    assert references == ["a" * 32]
+    service.save_preset(replace(service.configuration().active,
+        character_voices=(RemoteCharacterVoice("Kind", "a" * 32, "Новое название"),)))
+    assert service.status(character_id="Kind").verified
+    config = RemoteVoiceRepository(tmp_path / "profiles.json").load()
+    assert config.active.voice_display_name == "Общий · основной"
+    assert config.active.character_voices[0].display_name == "Новое название"

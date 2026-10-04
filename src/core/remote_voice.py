@@ -15,6 +15,13 @@ class RemoteVoiceTemplate:
 
 
 @dataclass(frozen=True, slots=True)
+class RemoteCharacterVoice:
+    character_id: str
+    voice_id: str
+    display_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteVoicePreset:
     id: str
     name: str
@@ -23,6 +30,15 @@ class RemoteVoicePreset:
     voice_id: str = ""
     model: str = "s1"
     speed: float = 1.0
+    character_voices: tuple[RemoteCharacterVoice, ...] = ()
+    voice_display_name: str = ""
+
+    def voice_for(self, character_id: str | None) -> str:
+        return next(
+            (voice.voice_id for voice in self.character_voices
+             if voice.character_id == character_id and voice.voice_id),
+            self.voice_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,7 +6,7 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from core.remote_voice import RemoteVoiceConfiguration, RemoteVoiceError, RemoteVoicePreset
+from core.remote_voice import RemoteCharacterVoice, RemoteVoiceConfiguration, RemoteVoiceError, RemoteVoicePreset
 
 
 class RemoteVoiceRepository:
@@ -19,11 +19,11 @@ class RemoteVoiceRepository:
             return RemoteVoiceConfiguration(preset.id, (preset,))
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            if data.get("version") != 1:
+            if data.get("version") not in {1, 2, 3}:
                 raise ValueError("unsupported version")
-            presets = tuple(RemoteVoicePreset(**item) for item in data["presets"])
+            presets = tuple(self._load_preset(item) for item in data["presets"])
             for preset in presets:
-                if not all(isinstance(getattr(preset, key), str) for key in ("id", "name", "template_id", "api_key", "voice_id", "model")):
+                if not all(isinstance(getattr(preset, key), str) for key in ("id", "name", "template_id", "api_key", "voice_id", "model", "voice_display_name")):
                     raise ValueError("invalid preset field types")
             active_id = data["active_id"]
             ids = [preset.id for preset in presets]
@@ -33,13 +33,25 @@ class RemoteVoiceRepository:
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             raise RemoteVoiceError("Не удалось прочитать настройки API озвучки.", code="settings.read") from None
 
+    @staticmethod
+    def _load_preset(item) -> RemoteVoicePreset:
+        values = dict(item)
+        voices = tuple(RemoteCharacterVoice(**voice) for voice in values.pop("character_voices", []))
+        ids = [voice.character_id for voice in voices]
+        if any(not isinstance(voice.character_id, str) or not voice.character_id
+               or not isinstance(voice.voice_id, str) or not isinstance(voice.display_name, str) for voice in voices):
+            raise ValueError("invalid character voice")
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate character voice")
+        return RemoteVoicePreset(**values, character_voices=voices)
+
     def save(self, config: RemoteVoiceConfiguration) -> None:
         name = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, name = tempfile.mkstemp(prefix=".remote-voice-", dir=self.path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as target:
-                json.dump({"version": 1, "active_id": config.active_id, "presets": [asdict(p) for p in config.presets]}, target, ensure_ascii=False, indent=2)
+                json.dump({"version": 3, "active_id": config.active_id, "presets": [asdict(p) for p in config.presets]}, target, ensure_ascii=False, indent=2)
                 target.flush()
                 os.fsync(target.fileno())
             os.replace(name, self.path)
