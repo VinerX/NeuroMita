@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Any, Optional, Tuple
 from contextlib import contextmanager
 
 from core.safe_eval import SafeEvalError, UnknownNameError, safe_eval_expression
+from .primitives import random
 from main_logger import logger
 
 if TYPE_CHECKING:
@@ -230,6 +231,7 @@ class DslInterpreter:
             "abs": abs,
             "max": max,
             "min": min,
+            "random": random,
         }
         combined_vars = {
             **self.character.variables,

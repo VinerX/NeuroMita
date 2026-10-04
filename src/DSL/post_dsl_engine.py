@@ -3,6 +3,7 @@ from core.error_utils import format_exception
 import re
 from typing import List, Dict, Any, Tuple, Callable, TYPE_CHECKING
 from core.safe_eval import SafeEvalError, safe_eval_expression
+from .primitives import random
 from main_logger import logger  # Use OpenMita's logger
 
 if TYPE_CHECKING:
@@ -196,6 +197,7 @@ class PostDslInterpreter:
             "abs": abs,
             "max": max,
             "min": min,
+            "random": random,
             "default": _default,
         }
 
@@ -204,7 +206,7 @@ class PostDslInterpreter:
         except SafeEvalError as e:
             logger.error(f"[{self.character.char_id}] Post-DSL: Error evaluating expression '{expr}': {format_exception(e)}",
                          exc_info=True)
-            raise PostDslError(f"Error evaluating expression: {expr}") from e
+            raise PostDslError(f"Error evaluating expression '{expr}': {e}") from e
 
     def _execute_actions(self, rule: PostDslRule, match_object: re.Match | None, current_response_segment: str,
                          extra_context: Dict[str, Any] | None = None) -> Tuple[str, bool]:
