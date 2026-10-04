@@ -19,6 +19,7 @@ from services.remote_voice_repository import RemoteVoiceRepository
 from services.remote_voice_service import DefaultRemoteVoiceService
 from ui.settings.voiceover_settings.remote_api import RemoteVoiceSettingsWidget
 from ui.settings.voiceover_settings.ui import build_voiceover_settings_ui
+from ui.character_names import character_display_name
 
 
 _APP = None
@@ -135,22 +136,23 @@ def test_avatar_tabs_keep_independent_drafts_and_save_together(panel):
     assert widget.voice_tabs.height() >= 80
     assert widget.voice_tabs.tabData(widget.voice_tabs.currentIndex()) == "Kind"
     widget.voice.setText("a" * 32)
-    widget.voice_display_name.setText("Добрая · спокойный")
+    assert widget.character_title.text() == character_display_name("Kind")
     widget.voice_tabs.setCurrentIndex(2)
     assert widget.voice.text() == ""
-    assert widget.voice_display_name.text() == ""
+    assert widget.character_title.text() == character_display_name("Cappie")
     widget.voice.setText("b" * 32)
-    widget.voice_display_name.setText("Кэппи · мягкий")
     widget.voice_tabs.setCurrentIndex(1)
     assert widget.voice.text() == "a" * 32
-    assert widget.voice_display_name.text() == "Добрая · спокойный"
+    assert widget.character_title.text() == character_display_name("Kind")
     widget.save_button.click()
     settle(app, vm)
     assert not vm.state.error
     assert service.configuration().active.voice_for("Kind") == "a" * 32
     assert service.configuration().active.voice_for("Cappie") == "b" * 32
     assert service.configuration().active.voice_id == ""
-    assert service.configuration().active.character_voices[0].display_name == "Добрая · спокойный"
+    widget.voice_tabs.setCurrentIndex(0)
+    assert widget.character_title.text() in ("Общий голос", "Default voice")
+    assert not hasattr(widget, "voice_display_name")
 
 
 def test_preview_uses_selected_tab_and_cleans_file(panel, tmp_path):
@@ -182,3 +184,43 @@ def test_painted_tabs_support_mouse_keyboard_and_finish_animation(panel):
     assert tabs.tabData(tabs.currentIndex()) is None
     QTest.keyClick(tabs, Qt.Key.Key_Right)
     assert tabs.tabData(tabs.currentIndex()) == "Kind"
+
+
+def test_voice_catalog_link_uses_selected_template(panel):
+    app, service, vm, widget = panel
+    assert '<a href="voices"' in widget.voice_hint.text()
+    assert "Голос не назначен" not in widget.voice_hint.text()
+    with patch("ui.settings.voiceover_settings.remote_api.QDesktopServices.openUrl") as open_url:
+        widget.voice_hint.linkActivated.emit("voices")
+    assert open_url.call_args.args[0].toString() == vm.templates[0].voices_url
+
+
+def test_language_refresh_preserves_drafts_selection_and_key_visibility(panel, monkeypatch):
+    import localization
+    from localization.live import refresh_all
+    app, service, vm, widget = panel
+    monkeypatch.setattr(localization, "_current_language", lambda: "EN")
+    widget.voice_tabs.setCurrentIndex(0)
+    widget.voice.setText("a" * 32)
+    widget.eye.trigger()
+    vm.update_state(busy=True)
+    refresh_all()
+    assert widget.character_title.text() == "Default voice"
+    assert widget.voice_tabs.accessibleDescription() == "Default voice"
+    assert widget.status.text() == "Working…"
+    assert widget.eye.toolTip() == "Hide API key"
+    assert "Fish Audio catalog" in widget.voice_hint.text()
+    assert widget.sample.toPlainText().startswith("Hi!")
+    assert widget.voice.text() == "a" * 32
+    widget.sample.setPlainText("My own preview text")
+    monkeypatch.setattr(localization, "_current_language", lambda: "ZH")
+    refresh_all()
+    assert widget.character_title.text() == "通用声音"
+    assert widget.sample.toPlainText() == "My own preview text"
+    assert widget.voice.text() == "a" * 32
+    vm.update_state(busy=False, message="Fish Audio: API-ключ не принят (HTTP 401).", error=True)
+    monkeypatch.setattr(localization, "_current_language", lambda: "EN")
+    refresh_all()
+    assert widget.status.text() == "Fish Audio: API key rejected (HTTP 401)."
+    vm.update_state(busy=True)
+    assert widget.status.text() == "Working…"

@@ -1,7 +1,8 @@
 from dataclasses import replace
+from html import escape
 
 import qtawesome as qta
-from PyQt6.QtCore import QSignalBlocker
+from PyQt6.QtCore import QSignalBlocker, Qt
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (
@@ -11,11 +12,13 @@ from PyQt6.QtWidgets import (
 from ui.settings.voiceover_settings.remote_presentation import (
     LoadRemoteVoice, SaveRemoteVoice, SelectRemoteVoice, AddRemoteVoice,
     DeleteRemoteVoice, PreviewRemoteVoice,
-    VoiceCharacter,
+    VoiceCharacter, remote_voice_message,
 )
 from core.remote_voice import RemoteCharacterVoice
+from ui.character_names import character_display_name
 from ui.widgets.character_voice_tabs import CharacterVoiceTabs
-from localization.live import tr_set
+from localization import translate
+from localization.live import tr_set, register
 from styles.theme import get_theme
 
 
@@ -29,8 +32,7 @@ class RemoteVoiceSettingsWidget(QWidget):
         self._selected_voice_id = None
         self._default_voice = ""
         self._character_voices = {}
-        self._default_voice_name = ""
-        self._voice_names = {}
+        self._character_titles = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(10)
@@ -70,9 +72,6 @@ class RemoteVoiceSettingsWidget(QWidget):
         form.addRow(self._label("API ключ", "API key"), key_row)
         self.voice = QLineEdit()
         self.voice.setMinimumHeight(38)
-        self.voice_display_name = QLineEdit()
-        self.voice_display_name.setMaxLength(80)
-        tr_set(self.voice_display_name, "Например: «Кэппи · мягкий голос»", "For example: Cappie · soft voice", "setPlaceholderText")
         tr_set(self.voice, "ID голоса или ссылка на голос Fish Audio", "Voice ID or Fish Audio voice URL", "setPlaceholderText")
         voice_row = QHBoxLayout()
         voice_row.addWidget(self.voice, 1)
@@ -96,15 +95,24 @@ class RemoteVoiceSettingsWidget(QWidget):
         body.addWidget(voice_title)
         self.voice_tabs = CharacterVoiceTabs()
         voice_card_layout = self.voice_tabs.content_layout
-        voice_card_layout.addWidget(tr_set(QLabel(), "Название голоса", "Voice display name"))
-        voice_card_layout.addWidget(self.voice_display_name)
+        self.character_title = QLabel()
+        self.character_title.setObjectName("RemoteVoiceTitle")
+        voice_card_layout.addWidget(self.character_title)
         voice_card_layout.addLayout(voice_row)
         self.voice_hint = QLabel()
         self.voice_hint.setObjectName("RemoteVoiceHint")
         self.voice_hint.setWordWrap(True)
+        self.voice_hint.setTextFormat(Qt.TextFormat.RichText)
+        self.voice_hint.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+        self.voice_hint.linkActivated.connect(lambda _url: self._open("voices_url"))
+        tr_set(self.voice_hint, "Где искать голос? Каталог Fish Audio", "Where can I find a voice? Fish Audio catalog",
+               transform=lambda text: '<a href="voices" style="color: ' + get_theme()["accent"] + ';">' + escape(text) + '</a>')
         voice_card_layout.addWidget(self.voice_hint)
         body.addWidget(self.voice_tabs)
-        self.sample = QPlainTextEdit("Привет! Я Мита. Давай проверим, как звучит мой голос.")
+        self.sample = QPlainTextEdit()
+        self._sample_default = ""
+        self._refresh_sample()
+        register(self, lambda w: w._refresh_sample())
         self.sample.setMaximumHeight(80)
         tr_set(self.sample, "Текст для проверки голоса", "Voice preview text", "setPlaceholderText")
         body.addWidget(self.sample)
@@ -133,10 +141,10 @@ class RemoteVoiceSettingsWidget(QWidget):
         self.save_button.clicked.connect(lambda: view_model.dispatch(SaveRemoteVoice(self._draft())))
         self.preview_button.clicked.connect(lambda: view_model.dispatch(PreviewRemoteVoice(self._draft(), self.sample.toPlainText(), self._selected_voice_id)))
         self.voice_tabs.currentChanged.connect(self._select_character_voice)
-        self.voice.textChanged.connect(self._update_voice_hint)
         self.keys_button.clicked.connect(lambda: self._open("keys_url"))
         self.voices_button.clicked.connect(lambda: self._open("voices_url"))
         view_model.state_changed.connect(self._render)
+        register(self, lambda w: w._refresh_dynamic_text())
         self._render(view_model.state)
         view_model.dispatch(LoadRemoteVoice())
 
@@ -157,7 +165,23 @@ class RemoteVoiceSettingsWidget(QWidget):
         hidden = self.key.echoMode() == QLineEdit.EchoMode.Password
         self.key.setEchoMode(QLineEdit.EchoMode.Normal if hidden else QLineEdit.EchoMode.Password)
         self.eye.setIcon(qta.icon("fa5s.eye-slash" if hidden else "fa5s.eye", color=self._icon_color))
-        tr_set(self.eye, "Скрыть API ключ" if hidden else "Показать API ключ", "Hide API key" if hidden else "Show API key", "setToolTip")
+        self._refresh_dynamic_text()
+
+    def _refresh_sample(self):
+        text = self.sample.toPlainText()
+        translated = str(translate("Привет! Я Мита. Давай проверим, как звучит мой голос.",
+                                   "Hi! I'm Mita. Let's hear how my voice sounds."))
+        if text == self._sample_default:
+            self.sample.setPlainText(translated)
+        self._sample_default = translated
+
+    def _refresh_dynamic_text(self):
+        hidden = self.key.echoMode() == QLineEdit.EchoMode.Password
+        self.eye.setToolTip(translate("Показать API ключ", "Show API key") if hidden else translate("Скрыть API ключ", "Hide API key"))
+        title = self._character_titles.get(self._selected_voice_id, self._selected_voice_id)
+        self.character_title.setText(character_display_name(self._selected_voice_id, title) if self._selected_voice_id else translate("Общий голос", "Default voice"))
+        state = self._vm.state
+        self.status.setText(translate("Выполняется…", "Working…") if state.busy else remote_voice_message(state.message))
 
     def _template_changed(self):
         template = next(t for t in self._vm.templates if t.id == self.provider.currentData())
@@ -171,20 +195,18 @@ class RemoteVoiceSettingsWidget(QWidget):
 
     def _draft(self):
         self._capture_voice()
+        names = {v.character_id: v.display_name for v in self._preset.character_voices}
         return replace(self._preset, name=self.name.text(), template_id=self.provider.currentData(),
                        api_key=self.key.text(), voice_id=self._default_voice, model=self.model.currentText(), speed=self.speed.value(),
-                       voice_display_name=self._default_voice_name,
-                       character_voices=tuple(RemoteCharacterVoice(cid, self._character_voices.get(cid, ""), self._voice_names.get(cid, ""))
-                                              for cid in dict.fromkeys((*self._character_voices, *self._voice_names))
-                                              if self._character_voices.get(cid, "").strip() or self._voice_names.get(cid, "").strip()))
+                       character_voices=tuple(RemoteCharacterVoice(cid, voice, names.get(cid, ""))
+                                              for cid, voice in self._character_voices.items()
+                                              if voice.strip() or names.get(cid, "").strip()))
 
     def _capture_voice(self):
         if self._selected_voice_id is None:
             self._default_voice = self.voice.text()
-            self._default_voice_name = self.voice_display_name.text()
         else:
             self._character_voices[self._selected_voice_id] = self.voice.text()
-            self._voice_names[self._selected_voice_id] = self.voice_display_name.text()
 
     def _select_character_voice(self, index):
         if self._preset is None or index < 0:
@@ -196,19 +218,7 @@ class RemoteVoiceSettingsWidget(QWidget):
     def _show_character_voice(self):
         voice = self._default_voice if self._selected_voice_id is None else self._character_voices.get(self._selected_voice_id, "")
         self.voice.setText(voice)
-        name = self._default_voice_name if self._selected_voice_id is None else self._voice_names.get(self._selected_voice_id, "")
-        self.voice_display_name.setText(name)
-        self._update_voice_hint()
-
-    def _update_voice_hint(self):
-        if self._selected_voice_id is None:
-            tr_set(self.voice_hint, "Используется для персонажей без отдельного голоса.", "Used for characters without an individual voice.")
-        elif self.voice.text().strip():
-            tr_set(self.voice_hint, "Отдельный голос для выбранного персонажа.", "Individual voice for the selected character.")
-        elif self._default_voice.strip():
-            tr_set(self.voice_hint, "Пока используется общий голос. Вставьте ID, чтобы назначить отдельный.", "Using the default voice. Paste a voice ID to assign an individual voice.")
-        else:
-            tr_set(self.voice_hint, "Голос не назначен. Укажите его здесь или во вкладке «Общий голос».", "No voice assigned. Set it here or in the Default voice tab.")
+        self._refresh_dynamic_text()
 
     def _select(self):
         selected = self.profiles.currentData()
@@ -217,7 +227,7 @@ class RemoteVoiceSettingsWidget(QWidget):
 
     def _render(self, state):
         self.controls.setEnabled(not state.busy and state.configuration is not None)
-        self.status.setText("Выполняется…" if state.busy else state.message)
+        self._refresh_dynamic_text()
         self.status.setStyleSheet("color: #ef9292;" if state.error else "")
         if state.error and self._preset is not None:
             blocker = QSignalBlocker(self.profiles)
@@ -240,14 +250,12 @@ class RemoteVoiceSettingsWidget(QWidget):
         self.key.setText(self._preset.api_key)
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.eye.setIcon(qta.icon("fa5s.eye", color=self._icon_color))
-        tr_set(self.eye, "Показать API ключ", "Show API key", "setToolTip")
         self._default_voice = self._preset.voice_id
-        self._default_voice_name = self._preset.voice_display_name
         self._character_voices = {v.character_id: v.voice_id for v in self._preset.character_voices}
-        self._voice_names = {v.character_id: v.display_name for v in self._preset.character_voices}
         characters = list(state.characters)
         known_ids = {character.character_id for character in characters}
         characters.extend(VoiceCharacter(cid, cid) for cid in self._character_voices if cid not in known_ids)
+        self._character_titles = {c.character_id: c.display_name for c in characters}
         if first_load:
             self._selected_voice_id = state.current_character_id or None
         if self._selected_voice_id not in {c.character_id for c in characters}:

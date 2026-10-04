@@ -5,8 +5,10 @@ from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRect, QRectF, Qt, QT
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
-from localization.live import tr_set
+from localization import translate
+from localization.live import tr_set, register
 from styles.theme import get_theme
+from ui.character_names import character_display_name
 from ui.chat.message_widget import resolve_character_avatar
 
 
@@ -47,6 +49,16 @@ class CharacterVoiceTabs(QWidget):
         layout.addWidget(self.content)
         self._previous = self._scroll_button("left", -1)
         self._next = self._scroll_button("right", 1)
+        register(self, lambda w: w._refresh_labels())
+
+    def _tab_label(self, index):
+        cid, name, _avatar = self._entries[index]
+        return character_display_name(cid, name) if cid else translate("Общий голос", "Default voice")
+
+    def _refresh_labels(self):
+        if self._entries:
+            self.setAccessibleDescription(self._tab_label(self._index))
+        self.setToolTip(self._tab_label(self._hovered) if self._hovered >= 0 else "")
 
     def _animation(self, property_name, duration):
         animation = QPropertyAnimation(self, property_name, self)
@@ -89,6 +101,7 @@ class CharacterVoiceTabs(QWidget):
         self._active_position = float(self._index)
         self._ensure_visible(animate=False)
         self._position_buttons()
+        self._refresh_labels()
         self.update()
 
     def setCurrentIndex(self, index):
@@ -100,7 +113,7 @@ class CharacterVoiceTabs(QWidget):
         self._motion.setEndValue(float(index))
         self._motion.start()
         self._ensure_visible()
-        self.setAccessibleDescription(self._entries[index][1])
+        self.setAccessibleDescription(self._tab_label(index))
         self.currentChanged.emit(index)
 
     def _get_active_position(self):
@@ -232,7 +245,7 @@ class CharacterVoiceTabs(QWidget):
         if index != self._hovered:
             self._hovered = index
             self._hover_timer.start()
-            self.setToolTip(self._entries[index][1] if index >= 0 else "")
+            self.setToolTip(self._tab_label(index) if index >= 0 else "")
             self.setCursor(Qt.CursorShape.PointingHandCursor if index >= 0 else Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
 
