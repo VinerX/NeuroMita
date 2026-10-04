@@ -15,6 +15,7 @@ from core.events import Events
 from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
+from core.networking.errors import valid_http_url
 from .state import PresetSnapshot
 from presets.api_endpoints import (
     CUSTOM_ENDPOINT_POLICY,
@@ -383,6 +384,16 @@ class EditorMixin:
             v.api_url_row.edit.setPlaceholderText("https://...")
 
         v.test_button.setVisible(bool(test_url))
+        if hasattr(v, "api_test_url_error"):
+            invalid = bool(test_url) and not valid_http_url(test_url)
+            v.api_test_url_error.setVisible(
+                invalid and not v.api_test_url_row.isHidden()
+            )
+            v.test_button.setEnabled(
+                bool(test_url)
+                and not invalid
+                and not bool(v.test_button.property("apiTesting"))
+            )
 
         v.url_help_label.setVisible(bool(doc_url))
         v.url_help_label.setText(f'<a href="{doc_url}" style="color: {THEME["link"]}; text-decoration: underline;">{_("Документация", "Documentation")}</a>' if doc_url else "")

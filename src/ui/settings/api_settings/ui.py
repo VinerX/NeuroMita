@@ -277,6 +277,17 @@ def build_api_settings_ui(self, parent_layout):
         )
     )
     self.api_test_url_row.setVisible(False)
+    self.api_test_url_error = tr_set(
+        QLabel(),
+        "Укажите HTTP или HTTPS URL с адресом сервера, например http://localhost:1234/v1/models.",
+        "Enter an HTTP or HTTPS URL with a server address, e.g. http://localhost:1234/v1/models.",
+    )
+    self.api_test_url_error.setWordWrap(True)
+    self.api_test_url_error.setStyleSheet(
+        f"color: {THEME['warn_text']}; font-size: 12px;"
+    )
+    self.api_test_url_error.hide()
+    self.api_test_url_row.layout().addWidget(self.api_test_url_error)
     content.addWidget(self.api_test_url_row)
     credentials = QGridLayout()
     credentials.setHorizontalSpacing(16)
@@ -361,18 +372,46 @@ def _build_protocol(self, layout):
     _update_reserve_count(self.reserve_keys_row)
     self.reserve_keys_section.add_widget(self.reserve_keys_row)
     layout.addWidget(self.reserve_keys_section)
-    self.protocol_section = CollapsibleSection(_("Расширенные настройки подключения", "Advanced connection settings"))
+    self.protocol_section = CollapsibleSection(
+        _("Расширенные настройки подключения", "Advanced connection settings"),
+        icon_name="fa5s.sliders-h",
+        subtitle=_(
+            "Формат API и обработка сообщений перед отправкой.",
+            "API format and message processing before sending.",
+        ),
+    )
     self.protocol_row = LabeledComboRow(_("Формат запроса", "Request format"))
+    self.protocol_row.combo.setMinimumHeight(40)
     self.protocol_section.add_widget(self.protocol_row)
     self.protocol_info_label = QLabel()
+    self.protocol_info_label.setObjectName("ApiProtocolHint")
+    self.protocol_info_label.setStyleSheet(
+        f"color: {THEME["muted"]}; font-size: 12px; font-weight: normal; border: none; padding: 0;"
+    )
     self.protocol_info_label.setWordWrap(True)
     self.protocol_section.add_widget(self.protocol_info_label)
-    self.protocol_transforms_view = QTextEdit()
-    self.protocol_transforms_view.setReadOnly(True)
-    self.protocol_transforms_view.setFixedHeight(90)
-    self.protocol_section.add_widget(self.protocol_transforms_view)
-    self.configure_pipeline_btn = _button("Настроить pipeline", "Configure pipeline", "fa5s.sliders-h")
-    self.protocol_section.add_widget(self.configure_pipeline_btn)
+    self.protocol_transforms_view = QLabel()
+    self.protocol_transforms_view.setWordWrap(True)
+    self.protocol_transforms_view.setObjectName("ApiProtocolHint")
+    self.protocol_transforms_view.setStyleSheet(
+        f"color: {THEME["muted"]}; font-size: 12px; font-weight: normal; border: none; padding: 0;"
+    )
+    processing_row = QWidget()
+    processing_layout = QHBoxLayout(processing_row)
+    processing_layout.setContentsMargins(0, 4, 0, 0)
+    processing_layout.setSpacing(12)
+    processing_layout.addWidget(self.protocol_transforms_view, 1)
+    self.configure_pipeline_btn = _button(
+        "Обработка сообщений",
+        "Message processing",
+        "fa5s.sliders-h",
+        "ApiPipelineButton",
+    )
+    self.configure_pipeline_btn.setStyleSheet(
+        f"background: {THEME["card_alt_bg"]}; color: {THEME["text"]}; border: 1px solid {THEME["panel_border"]}; border-radius: 9px;"
+    )
+    processing_layout.addWidget(self.configure_pipeline_btn)
+    self.protocol_section.add_widget(processing_row)
     layout.addWidget(self.protocol_section)
 
 

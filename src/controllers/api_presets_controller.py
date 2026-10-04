@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Iterable
 from dataclasses import dataclass, asdict, field, replace
 from presets.api_endpoints import resolve_api_url, resolve_test_url
+from core.networking.errors import (
+    NetworkRequestError,
+    classify_network_error,
+    http_status_message,
+    valid_http_url,
+)
 from urllib.parse import urlparse
 
 from core.app_paths import settings_path
@@ -1249,6 +1255,19 @@ class ApiPresetsController(ApiPresetService):
                 },
             )
             return
+        if not valid_http_url(test_url):
+            self.event_bus.emit(
+                Events.ApiPresets.TEST_FAILED,
+                {
+                    "id": preset_id,
+                    "error": "invalid_test_url",
+                    "message": _(
+                        "Укажите корректный HTTP или HTTPS URL с адресом сервера.",
+                        "Enter a valid HTTP or HTTPS URL with a server address.",
+                    ),
+                },
+            )
+            return
         if p_tpl:
             p_tpl = replace(p_tpl, test_url=test_url)
         else:
@@ -1482,17 +1501,37 @@ class ApiPresetsController(ApiPresetService):
             headers={},
         )
         if not isinstance(built, dict):
-            self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
-                "id": preset_id,
-                "success": False,
-                "message": "Protocol HTTP builder not available",
-            })
+            self.event_bus.emit(
+                Events.ApiPresets.TEST_RESULT,
+                {
+                    "id": preset_id,
+                    "success": False,
+                    "message": _(
+                        "Не удалось подготовить HTTP-запрос. Проверьте выбранный формат API.",
+                        "Could not prepare the HTTP request. Check the selected API format.",
+                    ),
+                },
+            )
             return
 
         final_url = str(built.get("url") or "")
         headers = built.get("headers") if isinstance(built.get("headers"), dict) else {}
         safe_url = str(built.get("safe_url") or final_url)
 
+        if not valid_http_url(final_url):
+            self.event_bus.emit(
+                Events.ApiPresets.TEST_RESULT,
+                {
+                    "id": preset_id,
+                    "success": False,
+                    "error": "invalid_test_url",
+                    "message": _(
+                        "Укажите корректный HTTP или HTTPS URL с адресом сервера.",
+                        "Enter a valid HTTP or HTTPS URL with a server address.",
+                    ),
+                },
+            )
+            return
         logger.info(f"Testing connection to {safe_url} with headers: {list(headers.keys())}")
 
         timeout = 30 if "openrouter.ai" in final_url.lower() else 15
@@ -1522,26 +1561,27 @@ class ApiPresetsController(ApiPresetService):
                     if model_infos:
                         models = [str(m.get("id") or "").strip() for m in model_infos if str(m.get("id") or "").strip()]
                         success = True
-                        message = f"Found {len(models)} models"
+                        message = _(
+                            "Найдено моделей: {count}", "Models found: {count}"
+                        ).format(count=len(models))
                     else:
                         success = True
-                        message = "Connection successful"
+                        message = _("Подключение успешно", "Connection successful")
+                except json.JSONDecodeError:
+                    success = False
+                    message = _(
+                        "Сервер ответил, но вернул не JSON. Проверьте URL проверки — обычно это endpoint списка моделей.",
+                        "The server responded with a non-JSON body. Check the test URL; it is usually the models endpoint.",
+                    )
+                    logger.warning(
+                        "[API check] Expected a JSON response for preset %s", preset_id
+                    )
                 except Exception as e:
                     success = False
                     message = f"Parsing error: {format_exception(e)}"
                     logger.error(f"Test parsing error for {preset_id}: {format_exception(e)}", exc_info=True)
-            elif status == 401:
-                message = "Invalid API key (Unauthorized)"
-            elif status == 403:
-                message = "Access forbidden. Check API key permissions."
-            elif status == 404:
-                message = "Endpoint not found"
-            elif status == 400:
-                message = "Bad request. Check URL and parameters."
-            elif status == 429:
-                message = "Rate limit exceeded"
             else:
-                message = f"HTTP {status}"
+                message = http_status_message(status, translate=_)
 
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
@@ -1550,18 +1590,25 @@ class ApiPresetsController(ApiPresetService):
                 "models": models,
                 "model_infos": model_infos,
             })
-        except httpx.TimeoutException:
-            self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
-                "id": preset_id,
-                "success": False,
-                "message": f"Connection timeout ({timeout}s)",
-            })
-        except httpx.TransportError:
-            self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
-                "id": preset_id,
-                "success": False,
-                "message": "Connection failed. Check internet connection.",
-            })
+        except (NetworkRequestError, httpx.HTTPError) as exc:
+            error = classify_network_error(
+                "api-presets", exc, method="GET", url=final_url
+            )
+            logger.warning("[API check] %s: %s", error.code, error.message)
+            self.event_bus.emit(
+                Events.ApiPresets.TEST_RESULT,
+                {
+                    "id": preset_id,
+                    "success": False,
+                    "error": error.code,
+                    "message": (
+                        http_status_message(error.status_code, translate=_)
+                        if error.status_code is not None
+                        else _(error.message)
+                    ),
+                    "error_details": error.to_payload(),
+                },
+            )
         except Exception as e:
             logger.error(f"Test error for {preset_id}: {format_exception(e)}", exc_info=True)
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {

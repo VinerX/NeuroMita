@@ -139,3 +139,154 @@ def test_template_can_declare_independent_test_url_override():
         resolve_test_url(template, "https://fixed/chat", "https://other/health")
         == "https://other/health"
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "111232132",
+        "http://",
+        "ftp://server/models",
+        "http://host:wrong/models",
+        "http://[bad",
+        "http://two hosts/models",
+    ],
+)
+def test_invalid_test_url_is_rejected_before_network_task(controller, monkeypatch, url):
+    supervisor = SimpleNamespace(start_thread=Mock())
+    monkeypatch.setattr(module, "task_supervisor", lambda: supervisor)
+    controller._on_test_connection(
+        Event(
+            Events.ApiPresets.TEST_CONNECTION,
+            {"id": 1001, "base": None, "test_url": url},
+        )
+    )
+    supervisor.start_thread.assert_not_called()
+    event, payload = controller.event_bus.emit.call_args.args
+    assert event == Events.ApiPresets.TEST_FAILED
+    assert payload["error"] == "invalid_test_url"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:1234/v1/models",
+        "https://192.168.1.10:8080/models",
+        "http://[::1]:1234/v1/models",
+        "http://lan-server/models",
+    ],
+)
+def test_validation_accepts_local_and_remote_http_addresses(url):
+    from core.networking.errors import valid_http_url
+
+    assert valid_http_url(url)
+
+
+def test_check_handles_common_network_error_without_traceback(controller, monkeypatch):
+    from core.networking.errors import NetworkTimeoutError
+
+    url = "https://server.test/models?key=secret"
+    builder = SimpleNamespace(
+        build_http_request=lambda **kwargs: {
+            "url": url,
+            "headers": {},
+            "safe_url": "https://server.test/models?key=<redacted>",
+        }
+    )
+    monkeypatch.setattr(module, "use", lambda _contract: builder)
+    error = NetworkTimeoutError(
+        "api-presets",
+        "Истекло время ожидания ответа сервера.",
+        code="network.timeout.read",
+        url=url,
+    )
+    controller._http_transport = SimpleNamespace(get=Mock(side_effect=error))
+    log = Mock()
+    monkeypatch.setattr(module, "logger", log)
+    controller._sync_test_connection(
+        1001, ApiTemplate(id=0, name="Custom", test_url=url), ""
+    )
+    log.error.assert_not_called()
+    log.warning.assert_called_once()
+    event, payload = controller.event_bus.emit.call_args.args
+    assert event == Events.ApiPresets.TEST_RESULT
+    assert not payload["success"]
+    assert payload["error"] == "network.timeout.read"
+    assert "secret" not in payload["error_details"]["url"]
+
+
+def test_non_json_response_has_readable_message_without_traceback(
+    controller, monkeypatch
+):
+    url = "http://localhost:1234/"
+    builder = SimpleNamespace(
+        build_http_request=lambda **kwargs: {"url": url, "headers": {}}
+    )
+    monkeypatch.setattr(module, "use", lambda _contract: builder)
+    response = SimpleNamespace(
+        status_code=200, text="<html>Server home</html>", close=Mock()
+    )
+    controller._http_transport = SimpleNamespace(get=Mock(return_value=response))
+    log = Mock()
+    monkeypatch.setattr(module, "logger", log)
+    controller._sync_test_connection(
+        1001, ApiTemplate(id=0, name="Custom", test_url=url), ""
+    )
+    log.error.assert_not_called()
+    response.close.assert_called_once()
+    _, payload = controller.event_bus.emit.call_args.args
+    assert not payload["success"]
+    assert "JSON" in payload["message"]
+
+
+@pytest.mark.parametrize(
+    "status", [400, 401, 403, 404, 405, 408, 429, 500, 502, 503, 504, 418, 520]
+)
+@pytest.mark.parametrize("raised", [False, True])
+def test_http_failure_explains_cause_and_action(
+    controller, monkeypatch, status, raised
+):
+    import httpx
+    from core.networking.errors import classify_network_error, http_status_message
+
+    url = "http://localhost:1234/v1/models"
+    builder = SimpleNamespace(
+        build_http_request=lambda **kwargs: {"url": url, "headers": {}}
+    )
+    monkeypatch.setattr(module, "use", lambda _contract: builder)
+    response = httpx.Response(
+        status,
+        text="untrusted response body with secret",
+        request=httpx.Request("GET", url),
+    )
+    if raised:
+        error = classify_network_error(
+            "api-presets",
+            httpx.HTTPStatusError(
+                "failed", request=response.request, response=response
+            ),
+        )
+        controller._http_transport = SimpleNamespace(get=Mock(side_effect=error))
+    else:
+        controller._http_transport = SimpleNamespace(get=Mock(return_value=response))
+    controller._sync_test_connection(
+        1001, ApiTemplate(id=0, name="Custom", test_url=url), ""
+    )
+    _, result = controller.event_bus.emit.call_args.args
+    assert not result["success"]
+    assert result["message"] == http_status_message(status, translate=module._)
+    assert len(result["message"].split("\n\n")[1]) > 40
+    assert "secret" not in result["message"]
+    if status == 503:
+        assert "позже" in result["message"] or "later" in result["message"]
+
+
+def test_http_error_explanation_is_localized(monkeypatch):
+    import localization
+    from core.networking.errors import http_status_message
+
+    monkeypatch.setattr(localization, "_current_language", lambda: "EN")
+    message = http_status_message(503, translate=localization.translate)
+    assert message.startswith("HTTP 503")
+    assert "temporarily unavailable" in message
+    assert "Retry later" in message

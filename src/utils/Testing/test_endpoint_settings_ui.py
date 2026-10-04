@@ -134,12 +134,12 @@ def test_address_expands_smoothly_and_pushes_locked_path(editor):
     control.resize(740, 40)
     control.show()
     QApplication.processEvents()
-    initial_width = control.address_edit.width()
+    initial_width = control._address_viewport.width()
     initial_path_x = control.suffix.x()
     control.address_edit.setText("my-long-lan-server-address:1234")
-    assert control.address_edit.width() == initial_width
+    assert control._address_viewport.width() == initial_width
     QTest.qWait(200)
-    assert control.address_edit.width() > initial_width
+    assert control._address_viewport.width() > initial_width
     assert control.suffix.x() > initial_path_x
     assert (
         control.text() == "http://my-long-lan-server-address:1234/v1/chat/completions"
@@ -147,6 +147,31 @@ def test_address_expands_smoothly_and_pushes_locked_path(editor):
     control.address_edit.setText("x" * 400)
     QTest.qWait(200)
     assert control.suffix.geometry().right() < control.width()
+    control.close()
+    control.deleteLater()
+
+
+def test_typing_does_not_scroll_address_before_expansion_finishes(editor):
+    control = TemplateUrlEdit()
+    control.set_template(next(item for item in API_TEMPLATES_DATA if item["id"] == 9))
+    control.setText("http://127.0.0.1:1234/v1/chat/completions")
+    control.resize(740, 40)
+    control.show()
+    control.activateWindow()
+    QApplication.processEvents()
+    control.address_edit.setFocus()
+    control.address_edit.setCursorPosition(len(control.address_edit.text()))
+    before = control.address_edit.inputMethodQuery(
+        Qt.InputMethodQuery.ImCursorRectangle
+    ).x()
+    QTest.keyClicks(control.address_edit, "W")
+    QApplication.processEvents()
+    after = control.address_edit.inputMethodQuery(
+        Qt.InputMethodQuery.ImCursorRectangle
+    ).x()
+    assert (
+        after - before >= control.address_edit.fontMetrics().horizontalAdvance("W") - 2
+    )
     control.close()
     control.deleteLater()
 
@@ -175,3 +200,34 @@ def test_local_voice_names_retranslate_from_catalog_without_selection_signal(
     assert combo.currentText() == "F5-TTS + RVC (Russian)"
     changed.assert_not_called()
     combo.deleteLater()
+
+
+def test_invalid_url_disables_check_and_shows_inline_hint(editor):
+    root = editor.view
+    root.api_test_url_row.set_text("111232132")
+    editor._on_field_changed()
+    assert not root.api_test_url_error.isHidden()
+    assert not root.test_button.isEnabled()
+    root.api_test_url_row.set_text("http://localhost:1234/v1/models")
+    editor._on_field_changed()
+    assert root.api_test_url_error.isHidden()
+    assert root.test_button.isEnabled()
+
+
+def test_protocol_section_uses_compact_labels_and_summary(editor):
+    from controllers.gui.api_settings.protocols_mixin import ProtocolsMixin
+    from presets.api_protocols import API_PROTOCOLS_DATA
+    from PyQt6.QtWidgets import QLabel
+
+    controller = ProtocolsMixin()
+    controller.view = editor.view
+    controller._protocols = {p["id"]: p for p in API_PROTOCOLS_DATA}
+    controller._protocol_default_id = "openai_compatible_default"
+    controller._populate_protocol_combo()
+    root = editor.view
+    assert root.protocol_section.icon_label is not None
+    assert isinstance(root.protocol_transforms_view, QLabel)
+    assert "True" not in root.protocol_info_label.text()
+    for index in range(root.protocol_row.combo.count()):
+        assert "[" not in root.protocol_row.combo.itemText(index)
+        assert root.protocol_row.combo.itemData(index) in controller._protocols

@@ -61,13 +61,15 @@ class TemplateUrlEdit(QWidget):
             "setToolTip",
         )
         self.separator = QLabel("://")
-        self.address_edit = QLineEdit()
+        self._address_viewport = QWidget()
+        self.address_edit = QLineEdit(self._address_viewport)
+        self._address_capacity = 100
+        self._address_viewport.setFocusProxy(self.address_edit)
+        self._address_viewport.installEventFilter(self)
         self._width_animation = QVariantAnimation(self)
         self._width_animation.setDuration(140)
         self._width_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._width_animation.valueChanged.connect(
-            lambda value: self.address_edit.setFixedWidth(int(value))
-        )
+        self._width_animation.valueChanged.connect(self._set_address_width)
         self._target_width = 0
         self.address_edit.setPlaceholderText("127.0.0.1:1234")
         tr_set(
@@ -78,7 +80,7 @@ class TemplateUrlEdit(QWidget):
             self.prefix,
             self.secure_edit,
             self.separator,
-            self.address_edit,
+            self._address_viewport,
             self.suffix,
         ):
             row.addWidget(widget)
@@ -160,31 +162,45 @@ class TemplateUrlEdit(QWidget):
             + 42
         )
         available = max(70, self.width() - locked_width)
+        self._address_capacity = available
+        self._layout_address()
         desired = (
             self.address_edit.fontMetrics().horizontalAdvance(
                 self.address_edit.text() or self.address_edit.placeholderText()
             )
-            + 24
+            + 6
         )
-        target = min(available, max(100, desired))
+        target = min(available, max(12, desired))
         if animate and self.isVisible() and self._stack.currentIndex() == 1:
             if target == self._target_width:
                 return
             self._width_animation.stop()
-            self._width_animation.setStartValue(self.address_edit.width())
+            self._width_animation.setStartValue(self._address_viewport.width())
             self._width_animation.setEndValue(target)
             self._target_width = target
             self._width_animation.start()
         else:
             self._width_animation.stop()
             self._target_width = target
-            self.address_edit.setFixedWidth(target)
+            self._set_address_width(target)
+
+    def _set_address_width(self, width) -> None:
+        self._address_viewport.setFixedWidth(int(width))
+
+    def _layout_address(self) -> None:
+        self.address_edit.setGeometry(
+            0, 0, self._address_capacity, self._address_viewport.height()
+        )
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._size_address()
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self._address_viewport:
+            if event.type() == QEvent.Type.Resize:
+                self._layout_address()
+            return super().eventFilter(watched, event)
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
         key = event.key()
