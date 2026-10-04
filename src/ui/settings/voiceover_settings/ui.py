@@ -1,7 +1,12 @@
+from ui.widgets.settings_section_header import create_settings_header
 import os
-from PyQt6.QtCore import Qt, QSignalBlocker
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QSignalBlocker, QUrl
+from PyQt6.QtGui import QColor, QDesktopServices
 from styles.theme import get_theme
+from core.telegram_credentials import (
+    telegram_credentials_complete,
+    TELEGRAM_CREDENTIAL_KEYS,
+)
 from ui.widgets.toggle_switch import ToggleSwitch, SettingsSwitch
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -49,23 +54,10 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     container_lay = QVBoxLayout(container)
     container_lay.setContentsMargins(0, 0, right_pad, 0)
     container_lay.setSpacing(16)
-    header = QHBoxLayout()
-    title = QVBoxLayout()
-    title.setSpacing(5)
-    title.addWidget(
-        voice_label("Настройки озвучки", "Voiceover settings", "VoiceTitle")
-    )
-    title.addWidget(
-        voice_label(
-            "Голоса персонажей, подключение и воспроизведение.",
-            "Character voices, connection and playback.",
-        )
-    )
-    header.addLayout(title, 1)
+    create_settings_header(container_lay, "voice")
     self.voiceover_status = VoiceStatus()
     self.voiceover_status.setMinimumWidth(300)
     self.voiceover_status.setMaximumWidth(380)
-    container_lay.addLayout(header)
     toolbar = VoiceCard()
     toolbar_row = QHBoxLayout()
     toolbar.body.setContentsMargins(16, 10, 16, 10)
@@ -192,27 +184,43 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
         },
         {"label": _("Настройки Telegram API", "Telegram API Settings"), "type": "text"},
         {
-            "label": _("Telegram ID", "Telegram ID"),
+            "label": _("API ID", "API ID"),
+            "widget_name": "tg_api_id",
             "key": "NM_TELEGRAM_API_ID",
             "type": "entry",
             "default": "",
             "hide": bool(self.settings.get("HIDE_PRIVATE")),
         },
         {
-            "label": _("Telegram Hash", "Telegram Hash"),
+            "label": _("API Hash", "API Hash"),
+            "widget_name": "tg_api_hash",
             "key": "NM_TELEGRAM_API_HASH",
             "type": "entry",
             "default": "",
             "hide": bool(self.settings.get("HIDE_PRIVATE")),
         },
         {
-            "label": _("Telegram Phone", "Telegram Phone"),
+            "label": _("Номер телефона", "Phone number"),
+            "widget_name": "tg_phone",
             "key": "NM_TELEGRAM_PHONE",
             "type": "entry",
             "default": "",
             "hide": bool(self.settings.get("HIDE_PRIVATE")),
         },
     ]
+
+    def connect_telegram():
+        values = dict(
+            zip(
+                TELEGRAM_CREDENTIAL_KEYS,
+                (self.tg_api_id.text(), self.tg_api_hash.text(), self.tg_phone.text()),
+            )
+        )
+        if not telegram_credentials_complete(values):
+            return
+        for key, value in values.items():
+            self._save_setting(key, value.strip())
+        actions.dispatch(StartTelegramVoice())
 
     for cfg in tg_config:
         if cfg.get("type") == "button":
@@ -223,7 +231,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             self.tg_connect_button.setIcon(
                 qta.icon("fa5b.telegram-plane", color=get_theme()["text"])
             )
-            self.tg_connect_button.clicked.connect(cfg["command"])
+            self.tg_connect_button.clicked.connect(connect_telegram)
             tg_layout.addWidget(self.tg_connect_button)
             continue
         if cfg.get("key") == "NM_TELEGRAM_API_HASH":
@@ -244,6 +252,82 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
         )
         if widget:
             tg_layout.addWidget(widget)
+
+    tr_set(
+        self.tg_api_id,
+        "api_id из my.telegram.org",
+        "api_id from my.telegram.org",
+        "setPlaceholderText",
+    )
+    tr_set(
+        self.tg_api_hash,
+        "api_hash из my.telegram.org",
+        "api_hash from my.telegram.org",
+        "setPlaceholderText",
+    )
+    tr_set(self.tg_phone, "+79991234567", "+79991234567", "setPlaceholderText")
+    self.tg_credentials_hint = voice_label(
+        "Для подключения заполните API ID, API Hash и номер вашего Telegram-аккаунта в международном формате.",
+        "To connect, enter API ID, API Hash and your Telegram account phone number in international format.",
+    )
+    tg_layout.addWidget(self.tg_credentials_hint)
+    docs = QHBoxLayout()
+    for ru, en, url in (
+        (
+            "Получить API ID и Hash",
+            "Get API ID and Hash",
+            "https://my.telegram.org/apps",
+        ),
+        (
+            "Инструкция Telegram",
+            "Telegram instructions",
+            "https://core.telegram.org/api/obtaining_api_id",
+        ),
+    ):
+        button = tr_set(QPushButton(), ru, en)
+        button.setIcon(qta.icon("fa5s.external-link-alt", color=get_theme()["muted"]))
+        button.clicked.connect(
+            lambda _checked, target=url: QDesktopServices.openUrl(QUrl(target))
+        )
+        docs.addWidget(button)
+    tg_layout.addLayout(docs)
+
+    def sync_telegram_credentials():
+        complete = telegram_credentials_complete(
+            {
+                "NM_TELEGRAM_API_ID": self.tg_api_id.text(),
+                "NM_TELEGRAM_API_HASH": self.tg_api_hash.text(),
+                "NM_TELEGRAM_PHONE": self.tg_phone.text(),
+            }
+        )
+        self.tg_credentials_hint.setVisible(not complete)
+        self.tg_connect_button.setEnabled(
+            complete
+            and self.use_voice_checkbox.isChecked()
+            and self.method_combobox.currentText() == "TG"
+            and not self.tg_connect_button.property("connectionLocked")
+        )
+
+    def clear_empty_credential(key, field):
+        if not field.text().strip():
+            self._save_setting(key, "")
+
+    for key, field in zip(
+        TELEGRAM_CREDENTIAL_KEYS, (self.tg_api_id, self.tg_api_hash, self.tg_phone)
+    ):
+        field.textChanged.connect(lambda _text: sync_telegram_credentials())
+        field.editingFinished.connect(
+            lambda setting_key=key, edit=field: clear_empty_credential(
+                setting_key, edit
+            )
+        )
+    self.use_voice_checkbox.toggled.connect(
+        lambda _checked: sync_telegram_credentials()
+    )
+    self.method_combobox.currentTextChanged.connect(
+        lambda _method: sync_telegram_credentials()
+    )
+    sync_telegram_credentials()
 
     columns.left_layout.addWidget(self.tg_settings_frame)
 

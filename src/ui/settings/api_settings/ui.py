@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ui.widgets.settings_section_header import create_settings_header
 
 from PyQt6.QtCore import Qt, QSize, QStringListModel, QTimer, QRect, QRectF
 from PyQt6.QtWidgets import (
@@ -133,21 +134,8 @@ def build_api_settings_ui(self, parent_layout):
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(14)
 
-    heading = QHBoxLayout()
-    titles = QVBoxLayout()
-    titles.setSpacing(4)
-    title = tr_set(QLabel(), "API пресеты", "API presets")
-    title.setObjectName("ApiSettingsTitle")
-    titles.addWidget(title)
-    subtitle = tr_set(QLabel(), "Управление подключениями к провайдерам и настройками моделей.",
-                      "Manage provider connections and model settings.")
-    subtitle.setObjectName("ApiSettingsSubtitle")
-    subtitle.setWordWrap(True)
-    titles.addWidget(subtitle)
-    heading.addLayout(titles, 1)
+    create_settings_header(layout, "api")
     self.add_preset_btn = _button("Добавить пресет", "Add preset", "fa5s.plus", "ApiAddPresetButton")
-
-    layout.addLayout(heading)
 
     workspace = QFrame()
     workspace.setObjectName("ApiWorkspacePanel")
@@ -540,13 +528,11 @@ def _build_routing(self, layout):
     self.openrouter_routing_section.setVisible(False)
 
 
-
 def _filter_presets(widget, text):
     query = text.strip().casefold()
     for index in range(widget.count()):
         item = widget.item(index)
         item.setHidden(query not in f"{item.base_name} {item.model} {getattr(item, 'provider_label', '')}".casefold())
-
 
 
 def _update_reserve_count(editor):

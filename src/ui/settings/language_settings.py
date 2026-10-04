@@ -6,8 +6,9 @@
 ``NEUROMITA_BASE_DIR/Localization``)."""
 
 from __future__ import annotations
+from ui.widgets.settings_section_header import create_settings_header
 
-from ui.gui_templates import create_settings_section, create_section_header
+from ui.gui_templates import create_settings_section
 from ui.settings.settings_access import get_setting
 from utils import getTranslationVariant as _
 
@@ -51,7 +52,7 @@ def _open_language_folder(gui=None):
 
 
 def setup_language_settings_controls(self, parent):
-    create_section_header(parent, _("Язык интерфейса", "Interface language"))
+    create_settings_header(parent, "language")
 
     # Список языков — динамически из доступных JSON-локалей (RU + найденные).
     try:

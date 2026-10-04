@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.telegram_credentials import telegram_credentials_complete
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -19,6 +20,7 @@ class _VoiceoverActionsState:
 
 
 class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
+
     def __init__(
         self,
         *,
@@ -27,11 +29,13 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
         playback_volume: Callable[[], int] | None = None,
         character_registry=None,
         open_settings: Callable[[str], None] | None = None,
+        telegram_settings: Callable[[], Any] | None = None,
         parent=None,
     ) -> None:
         super().__init__(_VoiceoverActionsState(), parent)
         self._events = events
         self._open_settings = open_settings
+        self._telegram_settings = telegram_settings or (lambda: {})
         from controllers.gui.remote_voice_settings_view_model import (
             RemoteVoiceSettingsViewModel,
         )
@@ -52,6 +56,8 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, StartTelegramVoice):
+            if not telegram_credentials_complete(self._telegram_settings()):
+                return
             self._events.publish(
                 UiTopic.TELEGRAM_START_SILERO,
                 {"source": "ui", "force": True},

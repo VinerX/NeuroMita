@@ -3,6 +3,7 @@
 Панель настроек для сбора данных дообучения.
 """
 from __future__ import annotations
+from ui.widgets.settings_section_header import create_settings_header
 from core.error_utils import format_exception
 
 import os
@@ -15,7 +16,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 
-from ui.gui_templates import create_section_header, SettingsBodyWidget
+from ui.gui_templates import SettingsBodyWidget
 from ui.settings.settings_access import get_setting, set_setting
 from ui.settings.finetune_data_presentation import (
     ClearFineTuneData,
@@ -36,7 +37,7 @@ def setup_data_settings_controls(self, parent, *, view_model):
             method(self, effect.title, effect.message)
 
     view_model.effect_emitted.connect(_handle_effect)
-    create_section_header(parent, _("Сбор данных", "Data Collection"))
+    create_settings_header(parent, "data_collection")
 
     # ── Explanatory info block ────────────────────────────────────────────────
     info_widget = SettingsBodyWidget()

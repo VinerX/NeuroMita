@@ -1,4 +1,5 @@
-from ui.gui_templates import create_settings_section, create_section_header
+from ui.widgets.settings_section_header import create_settings_header
+from ui.gui_templates import create_settings_section
 from ui.settings.settings_access import get_setting, settings_store
 from utils import getTranslationVariant as _
 
@@ -132,7 +133,7 @@ def _build_section_visibility_config(gui):
 
 
 def setup_general_settings_controls(self, parent):
-    create_section_header(parent, _("Основные настройки", "General Settings"))
+    create_settings_header(parent, "general")
 
     # ── Видимость разделов настроек ─────────────────────────────────────────
     # Replaces the old "Interface mode" Basic/Advanced/Full dropdown. Each

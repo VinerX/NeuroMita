@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ui.widgets.settings_section_header import create_settings_header
 
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -14,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from localization.live import tr_set
-from ui.gui_templates import SettingsBodyWidget, create_section_header
+from ui.gui_templates import SettingsBodyWidget
 from ui.widgets.settings_sections import InnerCollapsibleSection
 from utils import getTranslationVariant as _
 
@@ -126,7 +127,7 @@ def _clear_layout(layout) -> None:
 
 
 def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> None:
-    create_section_header(parent_layout, _("Управление ИИ-движком", "AI Engine management"))
+    create_settings_header(parent_layout, "ai_engine")
 
     root = SettingsBodyWidget()
     layout = QVBoxLayout(root)

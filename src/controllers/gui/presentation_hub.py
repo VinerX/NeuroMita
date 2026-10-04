@@ -445,6 +445,7 @@ class _ViewModelFactory:
         return VoiceoverSettingsViewModel(
             events=self._presentation.events,
             remote_service=services().get(RemoteVoiceService),
+            telegram_settings=lambda: use(SettingsService),
             playback_volume=lambda: use(SettingsService).get(
                 "VOICEOVER_LOCAL_VOLUME", 100
             ),

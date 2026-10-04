@@ -1,3 +1,7 @@
+from core.telegram_credentials import (
+    TELEGRAM_CREDENTIAL_KEYS,
+    telegram_credentials_complete,
+)
 from core.error_utils import format_exception
 import os
 import time
@@ -253,6 +257,7 @@ class VoiceoverGuiController(BaseController):
             "LOCAL_VOICE_LOAD_LAST",
             "VOICE_LANGUAGE",
             "TG_AUTOCONNECT",
+            *TELEGRAM_CREDENTIAL_KEYS,
         }
         if key not in relevant:
             return
@@ -402,6 +407,11 @@ class VoiceoverGuiController(BaseController):
 
         use_voice = self._effective_use_voice()
         method = self._effective_method()
+        if hasattr(btn, "setProperty"):
+            btn.setProperty(
+                "connectionLocked",
+                self._tg_connected is True or self._tg_is_connecting(),
+            )
 
         active = bool(use_voice and method == "TG")
 
@@ -420,7 +430,16 @@ class VoiceoverGuiController(BaseController):
             btn.setText(_("Подключено", "Connected"))
             return
 
-        btn.setEnabled(True)
+        credentials = {}
+        for key, name in zip(
+            TELEGRAM_CREDENTIAL_KEYS, ("tg_api_id", "tg_api_hash", "tg_phone")
+        ):
+            field = getattr(self.view, name, None)
+            credentials[key] = (
+                field.text() if field is not None else self._get_setting(key, "")
+            )
+        complete = telegram_credentials_complete(credentials)
+        btn.setEnabled(complete)
         btn.setText(_("Подключиться к Telegram", "Connect Telegram"))
 
     def _maybe_autoconnect_tg(self):
@@ -432,6 +451,10 @@ class VoiceoverGuiController(BaseController):
         if not use_voice or method != "TG":
             return
 
+        if not telegram_credentials_complete(
+            {key: self._get_setting(key, "") for key in TELEGRAM_CREDENTIAL_KEYS}
+        ):
+            return
         autoconnect = bool(self._get_setting("TG_AUTOCONNECT", True))
         if not autoconnect:
             return

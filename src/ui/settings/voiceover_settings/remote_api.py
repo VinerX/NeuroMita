@@ -144,7 +144,6 @@ class RemoteVoiceSettingsWidget(QWidget):
         self.character_title = QLabel()
         self.character_title.setObjectName("RemoteVoiceTitle")
         voice_card_layout.addWidget(self.character_title)
-        voice_card_layout.addLayout(voice_row)
         self.voice_hint = QLabel()
         self.voice_hint.setObjectName("RemoteVoiceHint")
         self.voice_hint.setWordWrap(True)
@@ -165,6 +164,7 @@ class RemoteVoiceSettingsWidget(QWidget):
             + "</a>",
         )
         voice_card_layout.addWidget(self.voice_hint)
+        voice_card_layout.addLayout(voice_row)
         body.addWidget(self.voice_tabs)
         self.save_button = tr_set(QPushButton(), "Сохранить профиль", "Save profile")
         self.save_button.setObjectName("RemoteVoiceSave")
@@ -185,8 +185,7 @@ class RemoteVoiceSettingsWidget(QWidget):
         self._sample_default = ""
         self._refresh_sample()
         register(self, lambda w: w._refresh_sample())
-        self.sample.setMinimumHeight(120)
-        self.sample.setMaximumHeight(180)
+        self.sample.setFixedHeight(88)
         tr_set(
             self.sample,
             "Текст для проверки голоса",

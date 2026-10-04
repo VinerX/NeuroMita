@@ -1,5 +1,6 @@
 """Settings panel for Python/Unity updates."""
 from __future__ import annotations
+from ui.widgets.settings_section_header import create_settings_header
 from core.error_utils import format_exception
 
 import os
@@ -30,7 +31,6 @@ from core.unity_installation import (
 )
 from main_logger import logger
 from services.update_contour import target_for_contour
-from ui.gui_templates import create_section_header
 from ui.widgets.tr_combobox import TRQComboBox
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -43,7 +43,7 @@ def setup_updates_settings_controls(
     pending_restart_version: Callable[[], str],
     set_pending_restart_version: Callable[[str | None], None],
 ):
-    create_section_header(parent, _("Обновления", "Updates"))
+    create_settings_header(parent, "updates")
 
     class _Dispatch(QObject):
         _go = pyqtSignal(object)

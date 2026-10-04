@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 SETTINGS_PAGE_QSS = r"""
+QWidget#SettingsSectionHeader, QWidget#SettingsSectionHeader QWidget { background: transparent; border: none; font-family: "Segoe UI"; }
+QWidget#SettingsPageRoot QWidget#SettingsSectionHeader QLabel#SettingsSectionIcon,
+QWidget#SettingsSectionHeader QLabel#SettingsSectionIcon { background: {chip_hover}; border-radius: 12px; }
+QWidget#SettingsPageRoot QWidget#SettingsSectionHeader QLabel#SettingsSectionTitle,
+QWidget#SettingsSectionHeader QLabel#SettingsSectionTitle { color: {text}; font-size: 23px; font-weight: 700; padding: 0px; margin: 0px; }
+QWidget#SettingsPageRoot QWidget#SettingsSectionHeader QLabel#SettingsSectionDescription,
+QWidget#SettingsSectionHeader QLabel#SettingsSectionDescription { color: {muted}; font-size: 12px; font-weight: 400; padding: 0px; margin: 0px; }
+
 QWidget#MicrophoneSettingsWorkspace { background: transparent; font-family: "Segoe UI"; }
 QWidget#MicrophoneSettingsWorkspace QWidget { font-family: "Segoe UI"; }
 QWidget#MicrophoneSettingsWorkspace QFrame#ASRCard {

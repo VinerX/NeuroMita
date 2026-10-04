@@ -1,3 +1,4 @@
+from ui.widgets.settings_section_header import create_settings_header
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame,
@@ -110,18 +111,7 @@ def build_microphone_settings_ui(self, parent_layout):
     layout = QVBoxLayout(root)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(14)
-    header = QHBoxLayout()
-    header.addWidget(_icon("fa5s.microphone", 30))
-    text = QVBoxLayout()
-    text.addWidget(_label("Настройки микрофона", "Microphone settings", "ASRTitle"))
-    text.addWidget(
-        _label(
-            "Устройства ввода, распознавание речи и проверка микрофона.",
-            "Input devices, speech recognition and microphone testing.",
-        )
-    )
-    header.addLayout(text, 1)
-    layout.addLayout(header)
+    create_settings_header(layout, "microphone")
 
     strip, strip_layout = _card()
     self.mic_active_checkbox = MicrophoneSwitch()

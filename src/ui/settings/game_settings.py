@@ -1,3 +1,4 @@
+from ui.widgets.settings_section_header import create_settings_header
 
 from pathlib import Path
 
@@ -416,6 +417,7 @@ def _create_beat_status_label_widget(gui) -> QWidget:
 
 def setup_game_controls(self, parent, *, beat_view_model) -> None:
     _attach_beat_view_model(self, beat_view_model)
+    create_settings_header(parent, "game")
 
     mod_config = [
         {

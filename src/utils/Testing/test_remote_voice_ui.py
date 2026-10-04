@@ -273,3 +273,52 @@ def test_language_refresh_preserves_drafts_selection_and_key_visibility(
     assert widget.status.text() == "Fish Audio: API key rejected (HTTP 401)."
     vm.update_state(busy=True)
     assert widget.status.text() == "Working…"
+
+
+def test_telegram_connect_requires_credentials_in_ui_and_action(panel):
+    from ui.settings.voiceover_settings.presentation import StartTelegramVoice
+
+    app, service, vm, widget = panel
+
+    class Store(dict):
+        def set(self, key, value):
+            self[key] = value
+
+    root = QWidget()
+    root.settings = Store(USE_VOICEOVER=True, VOICEOVER_METHOD="TG")
+    root._save_setting = root.settings.set
+    events = []
+    actions = VoiceoverSettingsViewModel(
+        events=SimpleNamespace(publish=lambda *args: events.append(args)),
+        remote_service=service,
+        telegram_settings=lambda: root.settings,
+    )
+    build_voiceover_settings_ui(root, QVBoxLayout(root), actions=actions)
+    settle(app, actions.remote)
+    assert not root.tg_connect_button.isEnabled()
+    actions.dispatch(StartTelegramVoice())
+    assert events == []
+    root.tg_api_id.setText("123456")
+    root.tg_api_hash.setText("hash")
+    root.tg_phone.setText(" ")
+    assert not root.tg_connect_button.isEnabled()
+    root.tg_phone.setText("+79991234567")
+    assert root.tg_connect_button.isEnabled()
+    root.tg_connect_button.click()
+    assert len(events) == 1
+    root.tg_api_hash.clear()
+    controller = VoiceoverGuiController.__new__(VoiceoverGuiController)
+    controller.view = root
+    controller._effective_use_voice = lambda: True
+    controller._effective_method = lambda: "TG"
+    controller._tg_is_connecting = lambda: False
+    controller._tg_connected = False
+    controller._get_setting = root.settings.get
+    controller._update_tg_connect_button()
+    assert not root.tg_connect_button.isEnabled()
+    root.tg_api_hash.editingFinished.emit()
+    assert not root.tg_connect_button.isEnabled()
+    actions.dispatch(StartTelegramVoice())
+    assert len(events) == 1
+    actions.close()
+    root.close()
