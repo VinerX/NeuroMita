@@ -1,6 +1,5 @@
 from core.error_utils import format_exception
-import re
-from PyQt6.QtCore import Qt
+from core.audio_input import ASRInputDevice
 from utils import getTranslationVariant as _
 from main_logger import logger
 from core.events import get_event_bus, Events
@@ -37,6 +36,11 @@ def wire_microphone_settings_logic(self):
             text = str(data.get("text", "") or "")
             kind = str(data.get("kind", "info") or "info")
 
+            set_status = getattr(lbl, "set_status", None)
+            if callable(set_status):
+                set_status(text, kind)
+                return
+
             fg, bg, br = _pill_style(kind)
             lbl.setText(text)
             lbl.setStyleSheet(
@@ -51,7 +55,9 @@ def wire_microphone_settings_logic(self):
         if hasattr(self, "asr_init_status") and self.asr_init_status is not None:
             try:
                 if hasattr(self, "asr_set_pill"):
-                    self.asr_set_pill.emit({"label": self.asr_init_status, "text": "—", "kind": "info"})
+                    self.asr_set_pill.emit(
+                        {"label": self.asr_init_status, "text": "—", "kind": "info"}
+                    )
                     return
             except Exception:
                 pass
@@ -84,28 +90,18 @@ def wire_microphone_settings_logic(self):
         logger.debug(f"ASR status refresh request failed: {format_exception(e)}")
 
 
-def on_mic_selected(gui, full_device_name=None):
+def on_mic_selected(gui, device=None):
     if not hasattr(gui, "mic_combobox"):
         return
+    device = device if device is not None else gui.mic_combobox.currentData()
+    if not isinstance(device, ASRInputDevice):
+        return
     bus = get_event_bus()
-
-    if full_device_name is None:
-        idx = gui.mic_combobox.currentIndex()
-        if idx >= 0:
-            full_device_name = gui.mic_combobox.itemData(idx, Qt.ItemDataRole.UserRole)
-
-    selection = full_device_name or ""
-    if selection and "(" in selection:
-        try:
-            microphone_name = selection.rsplit(" (", 1)[0]
-            m = re.search(r"\((\d+)\)\s*$", selection)
-            if m:
-                device_id = int(m.group(1))
-                bus.emit(Events.Speech.SET_MICROPHONE, {"name": microphone_name, "device_id": device_id})
-                if gui.settings.get("MIC_ACTIVE", False):
-                    bus.emit(Events.Speech.RESTART_SPEECH_RECOGNITION, {"device_id": device_id})
-        except Exception as e:
-            logger.error(f"Ошибка выбора микрофона: {format_exception(e)}")
+    bus.emit(
+        Events.Speech.SET_MICROPHONE, {"name": device.name, "device_id": device.index}
+    )
+    if gui.settings.get("MIC_ACTIVE", False):
+        bus.emit(Events.Speech.RESTART_SPEECH_RECOGNITION, {"device_id": device.index})
 
 
 def load_mic_settings(gui):
@@ -113,9 +109,13 @@ def load_mic_settings(gui):
         bus = get_event_bus()
         device_id = gui.settings.get("NM_MICROPHONE_ID", 0)
         device_name = gui.settings.get("NM_MICROPHONE_NAME", "")
-        bus.emit(Events.Speech.SET_MICROPHONE, {"name": device_name, "device_id": device_id})
+        bus.emit(
+            Events.Speech.SET_MICROPHONE, {"name": device_name, "device_id": device_id}
+        )
 
-        if gui.settings.get("MIC_ACTIVE", False) and hasattr(gui, "mic_active_checkbox"):
+        if gui.settings.get("MIC_ACTIVE", False) and hasattr(
+            gui, "mic_active_checkbox"
+        ):
             gui.mic_active_checkbox.setChecked(True)
 
     except Exception as e:

@@ -1,301 +1,536 @@
-# src/ui/settings/microphone_settings/ui.py
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QPushButton, QSizePolicy, QCheckBox, QSpinBox, QDoubleSpinBox,
-    QAbstractSpinBox,
+    QFrame,
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QLabel,
+    QComboBox,
+    QPushButton,
+    QSizePolicy,
+    QCheckBox,
+    QSpinBox,
+    QDoubleSpinBox,
 )
 import qtawesome as qta
 
-from ui.gui_templates import create_section_header, SettingsBodyWidget
-from utils import getTranslationVariant as _
-from localization.live import register_if_tr, tr_set
+from localization.live import tr_set, register
+from localization import translate as _
+from styles.theme import get_theme
+from handlers.asr_input_gate import normalize_input_mode
+from ui.settings.microphone_settings.widgets import (
+    MicrophoneDeviceComboBox,
+    MicrophoneLevelMeter,
+    ResponsiveColumns,
+    MicrophoneSwitch,
+    MicrophoneCheckBox,
+    RecognitionStatusBadge,
+)
+from controllers.gui.microphone_monitor_controller import MicrophoneMonitorController
 
 
-def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
-    """
-    Унифицированная строка настроек: метка слева, виджет справа.
-    """
-    row = SettingsBodyWidget()
-    hl = QHBoxLayout(row)
-    hl.setContentsMargins(0, 0, 0, 0)
-    hl.setSpacing(6)
+def _label(ru, en, name="ASRDescription"):
+    label = tr_set(QLabel(), ru, en)
+    label.setObjectName(name)
+    label.setWordWrap(True)
+    return label
 
-    lbl = QLabel(label_text)
-    register_if_tr(lbl, label_text)
-    lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-    lbl.setFixedWidth(label_w)
-    lbl.setWordWrap(True)
-    hl.addWidget(lbl, 0)
 
-    hl.addWidget(field_widget, 1)
+def _icon(name, size=22):
+    label = QLabel()
+    label.setObjectName("ASRIcon")
+    label.setPixmap(qta.icon(name, color=get_theme()["accent"]).pixmap(size, size))
+    label.setFixedSize(size + 16, size + 16)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return label
+
+
+def _button(ru, en, icon=None):
+    button = tr_set(QPushButton(), ru, en)
+    button.setObjectName("ASRAction")
+    if icon:
+        button.setIcon(qta.icon(icon, color=get_theme()["text"]))
+    return button
+
+
+def _refresh(ru, en):
+    button = _button("", "", "fa5s.sync-alt")
+    button.setFixedSize(34, 34)
+    tr_set(button, ru, en, "setToolTip")
+    return button
+
+
+def _card(title=None, english=None, icon=None):
+    card = QFrame()
+    card.setObjectName("ASRCard")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(16, 14, 16, 14)
+    layout.setSpacing(9)
+    if title:
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        if icon:
+            header.addWidget(_icon(icon, 18))
+        header.addWidget(_label(title, english, "ASRCardTitle"), 1)
+        layout.addLayout(header)
+    return card, layout
+
+
+def _row(ru, en, hint_ru, hint_en, field, icon):
+    row = QFrame()
+    row.setObjectName("ASRSettingRow")
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(10)
+    layout.addWidget(_icon(icon, 18))
+    copy = QVBoxLayout()
+    copy.setSpacing(3)
+    copy.addWidget(_label(ru, en, "ASRSettingTitle"))
+    copy.addWidget(_label(hint_ru, hint_en))
+    layout.addLayout(copy, 1)
+    layout.addWidget(field)
     return row
 
 
+def _top_field(ru, en, field):
+    widget = QWidget()
+    widget.setObjectName("ASRTransparent")
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(7)
+    layout.addWidget(_label(ru, en))
+    layout.addWidget(field)
+    return widget
+
+
 def build_microphone_settings_ui(self, parent_layout):
-    create_section_header(parent_layout, _("Настройки микрофона", "Microphone Settings"))
-
-    overlay_w = getattr(self, "SETTINGS_PANEL_WIDTH", 400)
-    label_w = max(90, min(120, int(overlay_w * 0.3)))
-    self.mic_label_width = label_w
-
-    root = SettingsBodyWidget()
-    root_lay = QVBoxLayout(root)
-    root_lay.setContentsMargins(0, 0, 0, 0)
-    root_lay.setSpacing(6)
-
-    # 0) Включение ASR — сразу под заголовком, чтобы было на виду
-    self.mic_active_checkbox = QCheckBox("")
-    self.mic_active_checkbox.setChecked(bool(self.settings.get("MIC_ACTIVE")))
-    tr_set(self.mic_active_checkbox, "Включить/выключить распознавание", "Enable/disable recognition", "setToolTip")
-    root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
-
-    # 1) Кнопка в глоссарий
-    self.asr_manage_button = tr_set(QPushButton(), "Перейти к настройкам ИИ-движка", "Open AI Engine settings")
-    self.asr_manage_button.setObjectName("SecondaryButton")
-    self.asr_manage_button.setIcon(qta.icon("fa6s.microchip", color="#ffffff"))
-    self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    # 2) Доступные (установленные) модели + refresh
-    engine_field = SettingsBodyWidget()
-    eng_h = QHBoxLayout(engine_field)
-    eng_h.setContentsMargins(0, 0, 0, 0)
-    eng_h.setSpacing(6)
-
-    self.recognizer_combobox = QComboBox()
-    self.recognizer_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    tr_set(self.recognizer_combobox, "Установленные модели распознавания", "Installed speech recognition models", "setToolTip")
-    eng_h.addWidget(self.recognizer_combobox, 1)
-
-    self.asr_models_empty_status = tr_set(
-        QLabel(),
-        "Нет установленных моделей",
-        "No installed models",
-    )
-    self.asr_models_empty_status.setObjectName("SeparatorLabel")
-    self.asr_models_empty_status.setVisible(False)
-    eng_h.addWidget(self.asr_models_empty_status, 1)
-
-    self.asr_refresh_button = QPushButton()
-    self.asr_refresh_button.setObjectName("SecondaryButton")
-    self.asr_refresh_button.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
-    tr_set(self.asr_refresh_button, "Обновить список моделей", "Refresh model list", "setToolTip")
-    self.asr_refresh_button.setFixedSize(28, 26)
-    eng_h.addWidget(self.asr_refresh_button, 0)
-
-    root_lay.addWidget(make_row(_("Модель", "Model"), engine_field, label_w))
-    root_lay.addWidget(self.asr_manage_button, 0)
-
-    # 3) Текущий микрофон + refresh
-    mic_field = SettingsBodyWidget()
-    mic_h = QHBoxLayout(mic_field)
-    mic_h.setContentsMargins(0, 0, 0, 0)
-    mic_h.setSpacing(6)
-
-    self.mic_combobox = QComboBox()
-    self.mic_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    mic_h.addWidget(self.mic_combobox, 1)
-
-    self.mic_refresh_button = QPushButton()
-    self.mic_refresh_button.setObjectName("SecondaryButton")
-    self.mic_refresh_button.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
-    tr_set(self.mic_refresh_button, "Обновить список микрофонов", "Refresh microphone list", "setToolTip")
-    self.mic_refresh_button.setFixedSize(28, 26)
-    mic_h.addWidget(self.mic_refresh_button, 0)
-
-    root_lay.addWidget(make_row(_("Микрофон", "Microphone"), mic_field, label_w))
-
-    # 4) Управление
-    self.mic_instant_checkbox = QCheckBox("")
-    self.mic_instant_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_SENT")))
-    tr_set(self.mic_instant_checkbox, "Мгновенная отправка распознанного текста", "Send recognized text immediately", "setToolTip")
-    root_lay.addWidget(make_row(_("Мгновенная отправка", "Instant send"), self.mic_instant_checkbox, label_w))
-
-    self.mic_instant_delay_checkbox = QCheckBox("")
-    self.mic_instant_delay_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_SEND_DELAY_ENABLED", False)))
-    tr_set(
-        self.mic_instant_delay_checkbox,
-        "Копить распознанное в поле ввода и отправлять после паузы, а не сразу",
-        "Collect recognized speech in the input field and send after a pause instead of immediately",
-        "setToolTip",
-    )
-    root_lay.addWidget(
-        make_row(_("Отправлять с паузой", "Send after pause"), self.mic_instant_delay_checkbox, label_w)
-    )
-
-    self.mic_instant_delay_spin = QDoubleSpinBox()
-    self.mic_instant_delay_spin.setRange(0.5, 30.0)
-    self.mic_instant_delay_spin.setValue(float(self.settings.get("MIC_INSTANT_SEND_DELAY_SEC", 3.0) or 3.0))
-    self.mic_instant_delay_spin.setSingleStep(0.5)
-    self.mic_instant_delay_spin.setDecimals(1)
-    self.mic_instant_delay_spin.setSuffix(" s")
-    self.mic_instant_delay_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-    self.mic_instant_delay_spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    tr_set(
-        self.mic_instant_delay_spin,
-        "Сколько ждать тишины перед отправкой. Новая речь и печать в чате отсчёт перезапускают",
-        "How long to wait for silence before sending. New speech and typing restart the countdown",
-        "setToolTip",
-    )
-    # Строка с паузой нужна только при включённой отправке с паузой.
-    self.mic_instant_delay_row = make_row(
-        _("Пауза до отправки", "Pause before send"), self.mic_instant_delay_spin, label_w
-    )
-    self.mic_instant_delay_row.setVisible(self.mic_instant_delay_checkbox.isChecked())
-    self.mic_instant_delay_checkbox.toggled.connect(self.mic_instant_delay_row.setVisible)
-    root_lay.addWidget(self.mic_instant_delay_row)
-
-    self.mic_instant_merge_input_checkbox = QCheckBox("")
-    self.mic_instant_merge_input_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_MERGE_CHAT_INPUT", True)))
-    tr_set(
-        self.mic_instant_merge_input_checkbox,
-        "При мгновенной отправке добавлять текст из поля ввода. При отправке с паузой текст из поля добавляется всегда",
-        "On instant send, include the typed chat input. With a pause, the typed text is always included",
-        "setToolTip",
-    )
-    root_lay.addWidget(
-        make_row(
-            _("Добавлять текст из чата", "Include chat text"),
-            self.mic_instant_merge_input_checkbox,
-            label_w,
+    root = QWidget()
+    root.setObjectName("MicrophoneSettingsWorkspace")
+    self.microphone_workspace = root
+    layout = QVBoxLayout(root)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(14)
+    header = QHBoxLayout()
+    header.addWidget(_icon("fa5s.microphone", 30))
+    text = QVBoxLayout()
+    text.addWidget(_label("Настройки микрофона", "Microphone settings", "ASRTitle"))
+    text.addWidget(
+        _label(
+            "Устройства ввода, распознавание речи и проверка микрофона.",
+            "Input devices, speech recognition and microphone testing.",
         )
     )
+    header.addLayout(text, 1)
+    layout.addLayout(header)
 
-    self.asr_input_mode_combobox = QComboBox()
-    self.asr_input_mode_combobox.addItem(_("Рация — включать кнопкой", "Radio — start with a button"), "radio")
-    self.asr_input_mode_combobox.addItem(_("Слушать постоянно", "Always listen"), "vad")
-    self.asr_input_mode_combobox.addItem("Push-to-talk", "ptt")
-    from handlers.asr_input_gate import normalize_input_mode
-    self.asr_input_mode_combobox.setCurrentIndex(
-        self.asr_input_mode_combobox.findData(normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio")))
+    strip, strip_layout = _card()
+    self.mic_active_checkbox = MicrophoneSwitch()
+    self.mic_active_checkbox.setChecked(bool(self.settings.get("MIC_ACTIVE", False)))
+    tr_set(
+        self.mic_active_checkbox,
+        "Включить/выключить распознавание",
+        "Enable/disable recognition",
+        "setToolTip",
     )
-    self.asr_input_mode_combobox.setToolTip(_(
-        "Рация слушает после нажатия микрофона в чате. Повторное нажатие завершает слушание. "
-        "Речь выделяется автоматически, с 0,5 с до и после фразы. В игре слушанием управляет кнопка игры.",
-        "Radio listens after clicking the chat microphone. Click again to stop. "
-        "Speech is detected with 0.5 s before and after each phrase. In game, the game button controls capture.",
-    ))
-    root_lay.addWidget(make_row(_("Режим ввода", "Input mode"), self.asr_input_mode_combobox, label_w))
+    tr_set(
+        self.mic_active_checkbox,
+        "Микрофон активен",
+        "Microphone active",
+        "setAccessibleName",
+    )
+    active = QWidget()
+    active.setObjectName("ASRTransparent")
+    active_layout = QHBoxLayout(active)
+    active_layout.setContentsMargins(0, 0, 0, 0)
+    active_layout.setSpacing(12)
+    active_layout.addWidget(self.mic_active_checkbox)
+    active_copy = QVBoxLayout()
+    active_copy.setSpacing(3)
+    active_copy.addWidget(
+        _label("Микрофон активен", "Microphone active", "ASRSettingTitle")
+    )
+    active_hint = QLabel()
+    active_hint.setObjectName("ASRDescription")
+    active_copy.addWidget(active_hint)
+    active_layout.addLayout(active_copy)
 
-    self.mic_mute_while_speaking_checkbox = QCheckBox("")
-    self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
-    self.mic_mute_while_speaking_checkbox.setToolTip(_(
-        "Приостанавливать распознавание во всех режимах, пока Мита говорит. Для записи через динамики оставьте включённым; в наушниках можно отключить.",
-        "Pause recognition in all modes while Mita is speaking. Keep enabled when using speakers; disable to dictate over her speech with headphones."
-    ))
-    root_lay.addWidget(make_row(_("Приостанавливать распознавание, пока Мита говорит", "Pause recognition while Mita speaks"), self.mic_mute_while_speaking_checkbox, label_w))
+    def refresh_active_hint():
+        active_hint.setProperty("micEnabled", self.mic_active_checkbox.isChecked())
+        active_hint.setText(
+            _("Распознавание включено", "Recognition enabled")
+            if self.mic_active_checkbox.isChecked()
+            else _("Распознавание выключено", "Recognition disabled")
+        )
 
-    # 5) Статус (как раньше) — под кнопками
-    status_field = SettingsBodyWidget()
-    status_h = QHBoxLayout(status_field)
-    status_h.setContentsMargins(0, 0, 0, 0)
-    status_h.setSpacing(6)
+    self.mic_active_checkbox.toggled.connect(lambda _checked: refresh_active_hint())
+    register(
+        active_hint,
+        lambda label: label.setText(
+            _("Распознавание включено", "Recognition enabled")
+            if label.property("micEnabled")
+            else _("Распознавание выключено", "Recognition disabled")
+        ),
+    )
+    refresh_active_hint()
 
-    self.asr_init_status = QLabel("—")
-    status_h.addWidget(self.asr_init_status, 1)
+    self.recognizer_combobox = QComboBox()
+    self.recognizer_combobox.setSizeAdjustPolicy(
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
+    self.recognizer_combobox.setMinimumContentsLength(8)
+    self.asr_refresh_button = _refresh("Обновить список моделей", "Refresh model list")
+    engine = QWidget()
+    eng = QHBoxLayout(engine)
+    eng.setContentsMargins(0, 0, 0, 0)
+    eng.addWidget(self.recognizer_combobox, 1)
+    eng.addWidget(self.asr_refresh_button)
+    self.asr_models_empty_status = _label(
+        "Нет установленных моделей", "No installed models"
+    )
+    self.asr_models_empty_status.hide()
+    eng.addWidget(self.asr_models_empty_status, 1)
 
-    self.asr_restart_button = QPushButton()
-    self.asr_restart_button.setObjectName("SecondaryButton")
-    self.asr_restart_button.setIcon(qta.icon("fa6s.power-off", color="#ffffff"))
-    self.asr_restart_button.setFixedSize(28, 26)
-    self.asr_restart_button.setEnabled(bool(self.settings.get("MIC_ACTIVE", False)))
+    self.mic_combobox = MicrophoneDeviceComboBox()
+    self.mic_refresh_button = _refresh(
+        "Обновить список микрофонов", "Refresh microphone list"
+    )
+    mic = QWidget()
+    mh = QHBoxLayout(mic)
+    mh.setContentsMargins(0, 0, 0, 0)
+    mh.addWidget(self.mic_combobox, 1)
+    mh.addWidget(self.mic_refresh_button)
+
+    self.asr_status_badge = RecognitionStatusBadge()
+    self.asr_init_status = self.asr_status_badge.label
+    self.asr_restart_button = _button("Перезапустить", "Restart", "fa5s.redo-alt")
+    self.asr_restart_button.setObjectName("ASRRestart")
+    self.asr_restart_button.setFixedHeight(38)
     tr_set(
         self.asr_restart_button,
-        "Полностью перезапустить распознавание речи",
-        "Fully restart speech recognition",
+        "Перезапустить распознавание",
+        "Restart speech recognition",
         "setToolTip",
     )
-    status_h.addWidget(self.asr_restart_button, 0)
-
-    root_lay.addWidget(make_row(_("Статус", "Status"), status_field, label_w))
-
-    # 6) VAD параметры
-    create_section_header(root_lay, _("Параметры распознавания", "Recognition Parameters"))
-
-    def _spinbox(min_val, max_val, default, step=1):
-        sb = QSpinBox()
-        sb.setRange(min_val, max_val)
-        sb.setValue(default)
-        sb.setSingleStep(step)
-        sb.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        sb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return sb
-
-    def _dspinbox(min_val, max_val, default, step, decimals=2):
-        sb = QDoubleSpinBox()
-        sb.setRange(min_val, max_val)
-        sb.setValue(default)
-        sb.setSingleStep(step)
-        sb.setDecimals(decimals)
-        sb.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        sb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return sb
-
-    # Общий live-ASR тракт (захват, Silero VAD и распознаватели) работает в
-    # 16 кГц. Произвольные значения вроде 14000 либо не открываются драйвером,
-    # либо роняют VAD уже после успешного открытия микрофона.
-    self.vad_sample_rate_spinbox = _spinbox(16000, 16000, 16000, 1000)
-    tr_set(
-        self.vad_sample_rate_spinbox,
-        "Live ASR использует фиксированную частоту 16000 Гц",
-        "Live ASR uses a fixed 16000 Hz sample rate",
-        "setToolTip",
+    self.asr_restart_button.setEnabled(bool(self.settings.get("MIC_ACTIVE", False)))
+    status = QWidget()
+    sh = QHBoxLayout(status)
+    sh.setContentsMargins(0, 0, 0, 0)
+    sh.addWidget(self.asr_status_badge)
+    self.asr_manage_button = _button("Каталог моделей", "Model catalog", "fa5s.cubes")
+    self.asr_manage_button.setFixedHeight(38)
+    self.asr_manage_button.setObjectName("ASRModelCatalog")
+    eng.insertWidget(2, self.asr_manage_button)
+    status_caption = _label("Статус", "Status")
+    sh.insertWidget(0, status_caption)
+    sh.setSpacing(9)
+    actions = QWidget()
+    actions.setObjectName("ASRTransparent")
+    toolbar = QHBoxLayout(actions)
+    toolbar.setContentsMargins(0, 0, 0, 0)
+    toolbar.setSpacing(20)
+    toolbar.addStretch(1)
+    toolbar.addWidget(status)
+    toolbar.addWidget(self.asr_restart_button)
+    strip_layout.addWidget(
+        ResponsiveColumns([active, actions], breakpoint=760, weights=[1, 2])
     )
-    root_lay.addWidget(make_row(_("Sample rate", "Sample rate"), self.vad_sample_rate_spinbox, label_w))
+    separator = QFrame()
+    separator.setObjectName("ASRToolbarSeparator")
+    separator.setFixedHeight(1)
+    strip_layout.addWidget(separator)
+    self.recognizer_combobox.setObjectName("ASRToolbarInput")
+    self.mic_combobox.setObjectName("ASRToolbarInput")
+    self.asr_refresh_button.setObjectName("ASRToolbarRefresh")
+    self.mic_refresh_button.setObjectName("ASRToolbarRefresh")
+    self.recognizer_combobox.setFixedHeight(38)
+    self.mic_combobox.setFixedHeight(38)
+    self.asr_refresh_button.setFixedSize(38, 38)
+    self.mic_refresh_button.setFixedSize(38, 38)
+    eng.setSpacing(8)
+    mh.setSpacing(8)
+    strip_layout.addWidget(
+        ResponsiveColumns(
+            [
+                _top_field("Модель распознавания", "Recognition model", engine),
+                _top_field("Устройство ввода", "Input device", mic),
+            ],
+            breakpoint=760,
+            weights=[3, 4],
+        )
+    )
+    layout.addWidget(strip)
 
-    self.vad_chunk_size_spinbox = _spinbox(128, 4096, 512, 128)
-    tr_set(self.vad_chunk_size_spinbox, "Размер чанка аудио", "Audio chunk size", "setToolTip")
-    root_lay.addWidget(make_row(_("Chunk size", "Chunk size"), self.vad_chunk_size_spinbox, label_w))
+    behavior, behavior_layout = _card(
+        "Поведение и отправка", "Behavior and sending", "fa5s.sliders-h"
+    )
+    switches = [
+        (
+            "mic_instant_checkbox",
+            "MIC_INSTANT_SENT",
+            False,
+            "Мгновенная отправка",
+            "Instant send",
+            "Отправлять распознанный текст сразу.",
+            "Send recognized text immediately.",
+            "fa5s.bolt",
+        ),
+        (
+            "mic_instant_delay_checkbox",
+            "MIC_INSTANT_SEND_DELAY_ENABLED",
+            False,
+            "Отправлять с паузой",
+            "Send after pause",
+            "Новая речь или печать перезапускает отсчёт.",
+            "New speech or typing restarts the countdown.",
+            "fa5s.clock",
+        ),
+        (
+            "mic_instant_merge_input_checkbox",
+            "MIC_INSTANT_MERGE_CHAT_INPUT",
+            True,
+            "Добавлять текст из чата",
+            "Include chat text",
+            "Объединять речь с текстом в поле ввода.",
+            "Combine speech with the typed chat input.",
+            "fa5s.comment-dots",
+        ),
+        (
+            "mic_mute_while_speaking_checkbox",
+            "MIC_MUTE_WHILE_SPEAKING",
+            True,
+            "Приостанавливать распознавание, пока Мита говорит",
+            "Pause recognition while Mita speaks",
+            "Не распознавать речь во время ответа Миты.",
+            "Ignore speech while Mita is replying.",
+            "fa5s.pause",
+        ),
+    ]
+    for attr, key, default, ru, en, hint_ru, hint_en, icon in switches:
+        checkbox = MicrophoneCheckBox()
+        checkbox.setChecked(bool(self.settings.get(key, default)))
+        tr_set(checkbox, ru, en, "setAccessibleName")
+        tr_set(checkbox, hint_ru, hint_en, "setToolTip")
+        setattr(self, attr, checkbox)
+        behavior_layout.addWidget(_row(ru, en, hint_ru, hint_en, checkbox, icon))
+        if key == "MIC_INSTANT_SEND_DELAY_ENABLED":
+            self.mic_instant_delay_spin = QDoubleSpinBox()
+            self.mic_instant_delay_spin.setRange(0.5, 30)
+            self.mic_instant_delay_spin.setValue(
+                float(self.settings.get("MIC_INSTANT_SEND_DELAY_SEC", 3.0) or 3.0)
+            )
+            self.mic_instant_delay_spin.setDecimals(1)
+            self.mic_instant_delay_spin.setSingleStep(0.5)
+            self.mic_instant_delay_spin.setFixedWidth(110)
+            self.mic_instant_delay_row = _row(
+                "Пауза до отправки",
+                "Pause before send",
+                "В секундах",
+                "In seconds",
+                self.mic_instant_delay_spin,
+                "fa5s.hourglass-half",
+            )
+            self.mic_instant_delay_row.setVisible(checkbox.isChecked())
+            checkbox.toggled.connect(self.mic_instant_delay_row.setVisible)
+            behavior_layout.addWidget(self.mic_instant_delay_row)
 
-    self.vad_threshold_spinbox = _dspinbox(0.0, 1.0, 0.5, 0.05)
-    tr_set(self.vad_threshold_spinbox, "Порог VAD (0.0–1.0)", "VAD threshold (0.0–1.0)", "setToolTip")
-    root_lay.addWidget(make_row(_("VAD threshold", "VAD threshold"), self.vad_threshold_spinbox, label_w))
+    self.asr_input_mode_combobox = QComboBox()
+    self.asr_input_mode_combobox.addItem(
+        _("Рация — включать кнопкой", "Radio — start with a button"), "radio"
+    )
+    self.asr_input_mode_combobox.addItem(_("Слушать постоянно", "Always listen"), "vad")
+    self.asr_input_mode_combobox.addItem("Push-to-talk", "ptt")
+    self.asr_input_mode_combobox.setCurrentIndex(
+        self.asr_input_mode_combobox.findData(
+            normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio"))
+        )
+    )
+    register(
+        self.asr_input_mode_combobox,
+        lambda w: (
+            w.setItemText(
+                0, _("Рация — включать кнопкой", "Radio — start with a button")
+            ),
+            w.setItemText(1, _("Слушать постоянно", "Always listen")),
+        ),
+    )
+    behavior_layout.addWidget(
+        _row(
+            "Режим ввода",
+            "Input mode",
+            "Способ активации распознавания речи.",
+            "How speech recognition is activated.",
+            self.asr_input_mode_combobox,
+            "fa5s.keyboard",
+        )
+    )
+    behavior_layout.addStretch(1)
 
-    self.vad_silence_timeout_spinbox = _dspinbox(0.05, 10.0, 0.6, 0.05)
-    tr_set(self.vad_silence_timeout_spinbox,
-           "Сколько тишины ждать после речи, прежде чем отправить фразу на распознавание (сек). "
-           "Меньше 0.4 рвёт фразу на куски",
-           "How much silence to wait after speech before sending the phrase for recognition (sec). "
-           "Below 0.4 the phrase gets chopped into pieces",
-           "setToolTip")
-    root_lay.addWidget(make_row(_("Тишина (сек)", "Silence (sec)"), self.vad_silence_timeout_spinbox, label_w))
+    recognition, recognition_layout = _card(
+        "Параметры распознавания", "Recognition parameters", "fa5s.wave-square"
+    )
+    params = [
+        (
+            "vad_sample_rate_spinbox",
+            "VOSK_SAMPLE_RATE",
+            16000,
+            16000,
+            16000,
+            1000,
+            0,
+            "Sample rate",
+            "Sample rate",
+            "Фиксированная частота: 16000 Гц.",
+            "Fixed sample rate: 16000 Hz.",
+            "fa5s.wave-square",
+        ),
+        (
+            "vad_chunk_size_spinbox",
+            "CHUNK_SIZE",
+            128,
+            4096,
+            512,
+            128,
+            0,
+            "Chunk size",
+            "Chunk size",
+            "Размер аудиоблока в сэмплах.",
+            "Audio block size in samples.",
+            "fa5s.database",
+        ),
+        (
+            "vad_threshold_spinbox",
+            "VAD_THRESHOLD",
+            0,
+            1,
+            0.5,
+            0.05,
+            2,
+            "VAD threshold",
+            "VAD threshold",
+            "Порог голосовой активности.",
+            "Voice activity threshold.",
+            "fa5s.wave-square",
+        ),
+        (
+            "vad_silence_timeout_spinbox",
+            "VAD_SILENCE_TIMEOUT_SEC",
+            0.05,
+            10,
+            0.6,
+            0.05,
+            2,
+            "Тишина (сек)",
+            "Silence (sec)",
+            "Пауза для окончания фразы. Менее 0,4 с может обрезать речь.",
+            "Pause ending a phrase. Below 0.4 s may cut speech short.",
+            "fa5s.clock",
+        ),
+        (
+            "vad_pre_buffer_spinbox",
+            "VAD_PRE_BUFFER_DURATION_SEC",
+            0,
+            5,
+            0.4,
+            0.05,
+            2,
+            "Pre-buffer (сек)",
+            "Pre-buffer (sec)",
+            "Аудио до начала речи.",
+            "Audio before speech begins.",
+            "fa5s.backward",
+        ),
+        (
+            "vad_max_speech_duration_spinbox",
+            "MAX_SPEECH_DURATION_SEC",
+            1,
+            120,
+            30,
+            1,
+            1,
+            "Макс. речь (сек)",
+            "Max speech (sec)",
+            "Максимальная длительность одной фразы.",
+            "Maximum duration of one phrase.",
+            "fa5s.hourglass-end",
+        ),
+        (
+            "vad_min_speech_duration_spinbox",
+            "MIN_SPEECH_DURATION_SEC",
+            0,
+            3,
+            0.35,
+            0.05,
+            2,
+            "Мин. речь (сек)",
+            "Min speech (sec)",
+            "Отсеивать щелчки и короткие звуки. 0 — отключить.",
+            "Filter clicks and short sounds. 0 disables the filter.",
+            "fa5s.filter",
+        ),
+    ]
+    for (
+        attr,
+        key,
+        minimum,
+        maximum,
+        default,
+        step,
+        decimals,
+        ru,
+        en,
+        hint_ru,
+        hint_en,
+        icon,
+    ) in params:
+        field = QDoubleSpinBox() if decimals else QSpinBox()
+        field.setRange(minimum, maximum)
+        field.setValue(default)
+        field.setSingleStep(step)
+        if decimals:
+            field.setDecimals(decimals)
+        field.setFixedWidth(110)
+        field.setEnabled(minimum != maximum)
+        tr_set(field, hint_ru, hint_en, "setToolTip")
+        setattr(self, attr, field)
+        recognition_layout.addWidget(_row(ru, en, hint_ru, hint_en, field, icon))
+    buttons = QHBoxLayout()
+    self.vad_apply_button = _button("Применить", "Apply", "fa5s.check")
+    self.vad_reset_button = _button("Сбросить", "Reset", "fa5s.undo")
+    buttons.addWidget(self.vad_apply_button, 1)
+    buttons.addWidget(self.vad_reset_button, 1)
+    recognition_layout.addLayout(buttons)
+    layout.addWidget(ResponsiveColumns([behavior, recognition], breakpoint=850))
 
-    self.vad_pre_buffer_spinbox = _dspinbox(0.0, 5.0, 0.4, 0.05)
-    tr_set(self.vad_pre_buffer_spinbox, "Предбуфер (сек)", "Pre-buffer (sec)", "setToolTip")
-    root_lay.addWidget(make_row(_("Pre-buffer (сек)", "Pre-buffer (sec)"), self.vad_pre_buffer_spinbox, label_w))
-
-    self.vad_max_speech_duration_spinbox = _dspinbox(1.0, 120.0, 30.0, 1.0, decimals=1)
-    tr_set(self.vad_max_speech_duration_spinbox, "Макс. длительность речи (сек)", "Max speech duration (sec)", "setToolTip")
-    root_lay.addWidget(make_row(_("Макс. речь (сек)", "Max speech (sec)"), self.vad_max_speech_duration_spinbox, label_w))
-
-    self.vad_min_speech_duration_spinbox = _dspinbox(0.0, 3.0, 0.35, 0.05)
-    tr_set(self.vad_min_speech_duration_spinbox,
-           "Более короткие звуки не отправляются на распознавание: щелчки и кашель модель "
-           "склонна «дорисовывать» несуществующим текстом. 0 — отключить фильтр",
-           "Shorter sounds are not sent for recognition: on clicks and coughs the model tends "
-           "to make up text that was never said. 0 disables the filter",
-           "setToolTip")
-    root_lay.addWidget(make_row(_("Мин. речь (сек)", "Min speech (sec)"), self.vad_min_speech_duration_spinbox, label_w))
-
-    # Кнопки «Применить» и «Сбросить» в одном ряду.
-    buttons_row = SettingsBodyWidget()
-    btn_h = QHBoxLayout(buttons_row)
-    btn_h.setContentsMargins(0, 0, 0, 0)
-    btn_h.setSpacing(6)
-
-    self.vad_apply_button = tr_set(QPushButton(), "Применить", "Apply")
-    self.vad_apply_button.setObjectName("SecondaryButton")
-    self.vad_apply_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    btn_h.addWidget(self.vad_apply_button, 1)
-
-    self.vad_reset_button = tr_set(QPushButton(), "Сбросить", "Reset")
-    self.vad_reset_button.setObjectName("SecondaryButton")
-    self.vad_reset_button.setIcon(qta.icon("fa5s.undo", color="#ffffff"))
-    self.vad_reset_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    tr_set(self.vad_reset_button, "Сбросить параметры распознавания к значениям по умолчанию",
-           "Reset recognition parameters to defaults", "setToolTip")
-    btn_h.addWidget(self.vad_reset_button, 1)
-
-    root_lay.addWidget(buttons_row)
-
+    monitor, monitor_layout = _card()
+    monitor_header = QHBoxLayout()
+    monitor_header.addWidget(_icon("fa5s.microphone", 22))
+    copy = QVBoxLayout()
+    copy.addWidget(_label("Уровень микрофона", "Microphone level", "ASRCardTitle"))
+    copy.addWidget(
+        _label(
+            "Во время теста вы слышите себя. Распознавание временно приостановлено.",
+            "During the test you hear yourself. Recognition is temporarily paused.",
+        )
+    )
+    monitor_header.addLayout(copy, 1)
+    self.mic_test_button = _button(
+        "Проверить микрофон", "Test microphone", "fa5s.headphones"
+    )
+    self.mic_test_button.setCheckable(True)
+    monitor_header.addWidget(self.mic_test_button)
+    monitor_layout.addLayout(monitor_header)
+    self.mic_level_meter = MicrophoneLevelMeter()
+    monitor_layout.addWidget(self.mic_level_meter)
+    self.mic_test_device_label = QLabel()
+    self.mic_test_device_label.setObjectName("ASRDescription")
+    self.mic_test_device_label.setWordWrap(True)
+    monitor_layout.addWidget(self.mic_test_device_label)
+    layout.addWidget(monitor)
+    self.mic_monitor_controller = MicrophoneMonitorController(
+        root,
+        self.mic_combobox,
+        self.mic_test_button,
+        self.mic_test_device_label,
+        self.mic_level_meter,
+    )
     parent_layout.addWidget(root)

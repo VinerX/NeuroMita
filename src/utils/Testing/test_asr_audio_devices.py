@@ -5,7 +5,27 @@ from types import SimpleNamespace
 from handlers.asr_audio_devices import (
     list_asr_input_devices,
     resolve_asr_input_device,
+    portaudio_stream_scope,
 )
+
+
+def test_refresh_does_not_reinitialize_portaudio_while_a_stream_is_open():
+    sounddevice = _HotPlugSoundDevice([], [], [], supported=set())
+    with portaudio_stream_scope():
+        list_asr_input_devices(sounddevice, refresh=True)
+    assert sounddevice.terminate_calls == 0
+
+
+def test_missing_saved_name_does_not_fall_back_to_reused_index_or_default():
+    sounddevice = _FakeSoundDevice(
+        [_device("Another microphone", 0)], [{"name": "WASAPI"}], supported={(0, 16000)}
+    )
+    assert (
+        resolve_asr_input_device(
+            sounddevice, requested_index=0, requested_name="Missing microphone"
+        )
+        is None
+    )
 
 
 class _FakeSoundDevice:
@@ -99,9 +119,10 @@ def test_native_rate_wasapi_is_preferred_for_capture():
 
     devices = list_asr_input_devices(sounddevice)
 
-    assert [(device.index, device.host_api, device.default_sample_rate) for device in devices] == [
-        (1, "Windows WASAPI", 48000.0)
-    ]
+    assert [
+        (device.index, device.host_api, device.default_sample_rate)
+        for device in devices
+    ] == [(1, "Windows WASAPI", 48000.0)]
 
 
 def test_windows_default_aliases_are_not_shown_as_extra_microphones():

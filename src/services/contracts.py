@@ -23,6 +23,7 @@ from core.remote_voice import (
     RemoteVoiceStatus,
     RemoteVoiceTemplate,
 )
+from core.audio_input import ASRInputDevice
 
 # ---------------------------------------------------------------------------
 # Настройки
@@ -1149,7 +1150,7 @@ class SpeechService(ABC):
     @abstractmethod
     def microphone_list_async(
         self,
-        callback: Callable[[List[str], BaseException | None], None],
+        callback: Callable[[List[ASRInputDevice], BaseException | None], None],
     ) -> None: ...
 
     @abstractmethod

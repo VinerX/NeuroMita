@@ -167,6 +167,11 @@ class SpeechController(SpeechService):
         eb.subscribe(Events.Speech.SPEECH_TEXT_RECOGNIZED, self._on_speech_text_recognized, weak=False)
         eb.subscribe(Events.Audio.MITA_SPEAKING_WINDOW, self._on_mita_speaking_window, weak=False)
         eb.subscribe(Events.Speech.ASR_PTT_STATE, self._on_asr_ptt_state, weak=False)
+        eb.subscribe(
+            Events.Speech.MICROPHONE_TEST_CHANGED,
+            self._on_microphone_test_changed,
+            weak=False,
+        )
         eb.subscribe(Events.Speech.ASR_CAPTURE_PROGRESS, self._on_capture_progress, weak=False)
         eb.subscribe(Events.Server.CLIENT_DISCONNECTED, self._on_client_disconnected, weak=False)
         eb.subscribe(Events.Server.ASR_TEXT_UNDELIVERED, self._on_asr_text_undelivered, weak=False)
@@ -177,7 +182,6 @@ class SpeechController(SpeechService):
         eb.subscribe(Events.Speech.RESTART_SPEECH_RECOGNITION, self._on_restart_speech_recognition, weak=False)
 
         eb.subscribe(Events.Speech.REFRESH_MICROPHONE_LIST, self._on_refresh_microphone_list, weak=False)
-
 
         eb.subscribe(Events.Speech.SET_RECOGNIZER_OPTION, self._on_set_recognizer_option, weak=False)
         eb.subscribe(Events.Speech.APPLY_RECOGNIZER_SETTINGS, self._on_apply_recognizer_settings, weak=False)
@@ -807,12 +811,29 @@ class SpeechController(SpeechService):
         mute_while_speaking = bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
         gate.configure(
             input_mode=input_mode,
-            enabled=bool(self.settings.get("MIC_ACTIVE", False)),
-            blocked_until=(self._speaking_window.blocked_until()
-                           if mute_while_speaking else 0.0),
+            enabled=bool(self.settings.get("MIC_ACTIVE", False))
+            and not bool(getattr(self, "_microphone_tests", set())),
+            blocked_until=(
+                self._speaking_window.blocked_until() if mute_while_speaking else 0.0
+            ),
         )
         self._game_transcripts().discard_invalid(gate.valid)
         SpeechRecognition.publish_input_gate()
+
+    def _on_microphone_test_changed(self, event: Event):
+        data = event.data or {}
+        session_id = str(data.get("session_id") or "")
+        if not session_id:
+            return
+        with self._state_lock:
+            sessions = getattr(self, "_microphone_tests", None)
+            if sessions is None:
+                sessions = self._microphone_tests = set()
+            if data.get("active"):
+                sessions.add(session_id)
+            else:
+                sessions.discard(session_id)
+        self._sync_input_gate()
 
     def _on_asr_ptt_state(self, event: Event):
         self._sync_input_gate()
@@ -862,6 +883,16 @@ class SpeechController(SpeechService):
             return
         if not bool(self.settings.get("MIC_ACTIVE")):
             performance_traces().finish(trace_id, "ignored", error_stage="asr.inactive") if trace_id else None
+            return
+
+        if getattr(self, "_microphone_tests", set()):
+            (
+                performance_traces().finish(
+                    trace_id, "ignored", error_stage="asr.microphone_test"
+                )
+                if trace_id
+                else None
+            )
             return
 
         capture_context = data.get("capture_context")
@@ -1090,11 +1121,10 @@ class SpeechController(SpeechService):
                     sample_rate=ASR_CAPTURE_SAMPLE_RATE,
                     refresh=True,
                 )
-                result = [device.option_text for device in devices]
-                return result or ["Микрофоны не найдены"]
+                return devices
             except Exception as e:
                 logger.error(f"Ошибка получения списка микрофонов: {format_exception(e)}")
-                return ["Ошибка загрузки"]
+                raise
 
         if not cb:
             return compute()
@@ -1108,7 +1138,7 @@ class SpeechController(SpeechService):
                     pass
             except Exception as e:
                 try:
-                    cb(["Ошибка загрузки"], e)
+                    cb([], e)
                 except Exception:
                     pass
 

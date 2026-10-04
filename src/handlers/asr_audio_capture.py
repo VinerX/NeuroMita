@@ -11,7 +11,7 @@ from typing import Awaitable, Callable
 
 import numpy as np
 
-from handlers.asr_audio_devices import refresh_portaudio_catalog
+from handlers.asr_audio_devices import refresh_portaudio_catalog, portaudio_stream_scope
 from handlers.asr_input_gate import ASRInputGate
 from handlers.asr_capture_progress import CaptureProgressTracker
 
@@ -425,7 +425,7 @@ class AudioCaptureService:
                 progress.finish(context, error)
 
         try:
-            with sd.InputStream(
+            with portaudio_stream_scope(), sd.InputStream(
                 samplerate=capture_sample_rate,
                 channels=1,
                 dtype="float32",

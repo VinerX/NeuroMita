@@ -1,6 +1,48 @@
 from __future__ import annotations
 
 SETTINGS_PAGE_QSS = r"""
+QWidget#MicrophoneSettingsWorkspace { background: transparent; font-family: "Segoe UI"; }
+QWidget#MicrophoneSettingsWorkspace QWidget { font-family: "Segoe UI"; }
+QWidget#MicrophoneSettingsWorkspace QFrame#ASRCard {
+    background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 14px;
+}
+QWidget#MicrophoneSettingsWorkspace QFrame#ASRSettingRow {
+    background: {card_alt_bg}; border: 1px solid {border_soft}; border-radius: 10px;
+}
+QWidget#MicrophoneSettingsWorkspace QLabel { border: none; background: transparent; }
+QWidget#MicrophoneSettingsWorkspace QLabel#ASRTitle { font-size: 23px; font-weight: 700; color: {text}; }
+QWidget#MicrophoneSettingsWorkspace QLabel#ASRCardTitle { font-size: 15px; font-weight: 600; color: {text}; }
+QWidget#MicrophoneSettingsWorkspace QLabel#ASRSettingTitle { font-size: 13px; font-weight: 600; color: {text}; }
+QWidget#MicrophoneSettingsWorkspace QLabel#ASRDescription { font-size: 12px; font-weight: 400; color: {muted}; }
+QWidget#MicrophoneSettingsWorkspace QLabel#ASRIcon { background: {chip_hover}; border-radius: 10px; }
+QWidget#MicrophoneSettingsWorkspace QFrame#ASRToolbarSeparator { background: {panel_border}; border: none; }
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRModelCatalog,
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRRestart,
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRToolbarRefresh {
+    background: {chip_bg}; border: 1px solid {panel_border}; border-radius: 9px;
+    padding: 0px 14px; min-height: 36px; max-height: 36px; color: {text}; font-weight: 600;
+}
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRToolbarRefresh { padding: 0px; }
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRModelCatalog:hover,
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRRestart:hover,
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRToolbarRefresh:hover { background: {chip_bg}; border-color: {muted}; }
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRRestart:disabled { color: {muted}; }
+QWidget#MicrophoneSettingsWorkspace QComboBox#ASRToolbarInput {
+    background: {control_bg}; border: 1px solid {panel_border}; border-radius: 9px;
+    padding: 0px 10px; min-height: 36px; max-height: 36px;
+}
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRAction {
+    background: {chip_bg}; border: 1px solid {panel_border}; border-radius: 9px;
+    padding: 8px 12px; color: {text}; font-weight: 600;
+}
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRAction:hover { background: {chip_hover}; border-color: {accent_border}; }
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRAction:checked { background: {accent}; border-color: {accent_border}; }
+QWidget#MicrophoneSettingsWorkspace QPushButton#ASRAction:disabled { color: {muted}; background: {control_bg}; }
+QWidget#MicrophoneSettingsWorkspace QComboBox { min-width: 0px; }
+QWidget#MicrophoneSettingsWorkspace QSpinBox, QWidget#MicrophoneSettingsWorkspace QDoubleSpinBox {
+    background: {control_bg}; border: 1px solid {panel_border}; border-radius: 8px;
+    color: {text}; padding: 5px 8px; min-height: 24px;
+}
 QWidget#VoiceoverSettingsWorkspace, QWidget#VoiceoverSettingsWorkspace QWidget {
     font-family: "Segoe UI"; letter-spacing: 0px;
 }

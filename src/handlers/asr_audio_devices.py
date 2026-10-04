@@ -1,12 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import contextmanager
 from threading import RLock
 from typing import Any
-
+from core.audio_input import ASRInputDevice
 
 ASR_CAPTURE_SAMPLE_RATE = 16000
 _PORTAUDIO_CATALOG_LOCK = RLock()
+_ACTIVE_STREAMS = 0
+
+
+@contextmanager
+def portaudio_stream_scope():
+    """Prevent catalog reinitialization while a capture or monitor owns streams."""
+    global _ACTIVE_STREAMS
+    with _PORTAUDIO_CATALOG_LOCK:
+        _ACTIVE_STREAMS += 1
+    try:
+        yield
+    finally:
+        with _PORTAUDIO_CATALOG_LOCK:
+            _ACTIVE_STREAMS -= 1
+
 
 _WINDOWS_DEFAULT_INPUT_ALIASES = frozenset(
     {
@@ -16,18 +31,6 @@ _WINDOWS_DEFAULT_INPUT_ALIASES = frozenset(
         "первичный драйвер захвата звука",
     }
 )
-
-
-@dataclass(frozen=True)
-class ASRInputDevice:
-    index: int
-    name: str
-    host_api: str
-    default_sample_rate: float | None = None
-
-    @property
-    def option_text(self) -> str:
-        return f"{self.name} ({self.index})"
 
 
 def normalize_device_name(value: Any) -> str:
@@ -99,6 +102,8 @@ def refresh_portaudio_catalog(sounddevice) -> None:
     """
 
     with _PORTAUDIO_CATALOG_LOCK:
+        if _ACTIVE_STREAMS:
+            return
         terminate = getattr(sounddevice, "_terminate", None)
         initialize = getattr(sounddevice, "_initialize", None)
         if not callable(terminate) or not callable(initialize):
@@ -197,7 +202,9 @@ def _list_asr_input_devices(
         if current is None:
             selected[physical_key] = candidate
             order.append(physical_key)
-        elif _host_api_priority(candidate.host_api) < _host_api_priority(current.host_api):
+        elif _host_api_priority(candidate.host_api) < _host_api_priority(
+            current.host_api
+        ):
             selected[physical_key] = candidate
 
     return [selected[key] for key in order]
@@ -222,7 +229,9 @@ def resolve_asr_input_device(
         return None
 
     try:
-        requested_index_value = int(requested_index) if requested_index is not None else None
+        requested_index_value = (
+            int(requested_index) if requested_index is not None else None
+        )
     except (TypeError, ValueError):
         requested_index_value = None
 
@@ -237,7 +246,8 @@ def resolve_asr_input_device(
             if device.index == requested_index_value:
                 return device
         if same_name:
-            return same_name[0]
+            return same_name[0] if len(same_name) == 1 else None
+        return None
 
     if requested_index_value is not None:
         for device in devices:
