@@ -13,6 +13,7 @@ from services.contracts import (
     AudioStateService,
     GameLinkService,
     LocalVoiceService,
+    RemoteVoiceService,
     LoopService,
     TelegramService,
 )
@@ -154,8 +155,8 @@ class AudioController(AudioStateService):
                     trace_id=trace_id,
                 ))
 
-            elif self.voiceover_method == "Local":
-                loop_service.run(self._await_local_voiceover_and_postprocess(
+            elif self.voiceover_method in {"Local", "API"}:
+                loop_service.run(self._synthesize_and_deliver(
                     text_for_voice,
                     original_text,
                     task_uid,
@@ -163,6 +164,7 @@ class AudioController(AudioStateService):
                     voice_profile=voice_profile,
                     message_id=message_id,
                     trace_id=trace_id,
+                    method=self.voiceover_method,
                 ))
 
             else:
@@ -233,7 +235,7 @@ class AudioController(AudioStateService):
 
         logger.info("Завершение получения фразы (Telegram)")
 
-    async def _await_local_voiceover_and_postprocess(
+    async def _synthesize_and_deliver(
         self,
         voice_text: str,
         original_text: str,
@@ -242,17 +244,23 @@ class AudioController(AudioStateService):
         voice_profile: Optional[dict] = None,
         message_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        method: str = "Local",
     ):
         trace_status = "ok"
         trace_error_stage = ""
         trace_error_type = ""
+        result_path = None
+        delivered_to_game = False
         try:
-            with perf_span(trace_id, "tts.synthesis", method="local"):
-                result_path = await use(LocalVoiceService).synthesize(
-                    voice_text,
-                    character_id=character_id,
-                    voice_profile=voice_profile,
-                )
+            with perf_span(trace_id, "tts.synthesis", method=method.lower()):
+                if method == "API":
+                    result_path = await use(RemoteVoiceService).synthesize(original_text)
+                else:
+                    result_path = await use(LocalVoiceService).synthesize(
+                        voice_text,
+                        character_id=character_id,
+                        voice_profile=voice_profile,
+                    )
             if result_path:
                 perf_mark(trace_id, "tts.ready")
 
@@ -293,6 +301,7 @@ class AudioController(AudioStateService):
                                 self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
                                 if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True,
                                 volume=self._local_playback_volume(),
+                                raise_errors=method == "API",
                             )
                     except Exception as playback_error:
                         trace_error_stage = "audio.playback"
@@ -306,13 +315,22 @@ class AudioController(AudioStateService):
 
         except Exception as e:
             trace_status = "error"
-            trace_error_stage = trace_error_stage or "tts.local"
+            trace_error_stage = trace_error_stage or f"tts.{method.lower()}"
             trace_error_type = trace_error_type or type(e).__name__
             error_description = format_exception(e)
-            logger.error(f"Ошибка при выполнении локальной озвучки: {error_description}")
+            logger.error("Ошибка озвучки (%s): %s", method, error_description)
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, error_description)
         finally:
+            if method == "API" and result_path and not delivered_to_game:
+                try:
+                    os.remove(result_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning("[RemoteVoice] Failed to remove audio file")
+            if method == "API":
+                self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
             self.waiting_answer = False
             if trace_id:
                 performance_traces().finish(

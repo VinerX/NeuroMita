@@ -107,6 +107,9 @@ class MainController:
         self.settings = self.settings_controller.settings
         startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
+        from services.contracts import RemoteVoiceService
+        from services.remote_voice_service import DefaultRemoteVoiceService
+        services().register(RemoteVoiceService, DefaultRemoteVoiceService(), replace=True)
         from services.runtime_ipc_service import DefaultRuntimeIPCService
 
         self.runtime_ipc_service = services().register(
@@ -643,6 +646,10 @@ class MainController:
 
         # Воркеры настроек (переиндексация, миграции, экспорт) переживают закрытие
         # окна и дёргают колбэки с уже уничтоженными виджетами — гасим до GUI.
+        from services.contracts import RemoteVoiceService
+        remote_voice = services().get_optional(RemoteVoiceService)
+        if remote_voice is not None:
+            shutdown_step("remote voice", remote_voice.close)
         shutdown_step("GUI task workers", gui_task_supervisor().stop_all)
 
         gui_controller = getattr(self, "gui_controller", None)

@@ -23,12 +23,24 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
         self,
         *,
         events,
+        remote_service,
+        playback_volume: Callable[[], int] | None = None,
         open_settings: Callable[[str], None] | None = None,
         parent=None,
     ) -> None:
         super().__init__(_VoiceoverActionsState(), parent)
         self._events = events
         self._open_settings = open_settings
+        from controllers.gui.remote_voice_settings_view_model import RemoteVoiceSettingsViewModel
+        self.remote = RemoteVoiceSettingsViewModel(
+            remote_service, self,
+            playback_state=lambda active: events.publish(UiTopic.AUDIO_MITA_SPEAKING_WINDOW, {"active": active}),
+            playback_volume=playback_volume,
+        )
+
+    def close(self):
+        self.remote.close()
+        super().close()
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, StartTelegramVoice):

@@ -26,6 +26,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     right_pad = max(8, min(14, int(sidebar_w * 0.22)))
 
     container = SettingsBodyWidget()
+    container.setObjectName("VoiceoverSettingsWorkspace")
     container_lay = QVBoxLayout(container)
     container_lay.setContentsMargins(0, 0, right_pad, 0)
     container_lay.setSpacing(6)
@@ -40,7 +41,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'default_checkbutton': False, 'widget_name': 'use_voice_checkbox'},
         {'label': _("Вариант озвучки", "Voiceover Method"),
          'key': 'VOICEOVER_METHOD', 'type': 'combobox',
-         'options': ["TG", "Local"], 'default': 'Local',
+         'options': ["TG", "Local", "API"], 'default': 'Local',
          'widget_name': 'method_combobox'},
     ]
 
@@ -259,7 +260,16 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     volume_layout.addWidget(volume_label)
     volume_layout.addWidget(self.local_volume_slider, 1)
     volume_layout.addWidget(self.local_volume_value_label, 0)
-    local_layout.addWidget(volume_row)
+    self.playback_settings_frame = SettingsBodyWidget()
+    playback_layout = QVBoxLayout(self.playback_settings_frame)
+    playback_layout.setContentsMargins(0, 0, 0, 0)
+    playback_layout.addWidget(volume_row)
+    playback_layout.addWidget(create_setting_widget(
+        gui=self, parent=self.playback_settings_frame,
+        label=_("Озвучивать в чате", "Voiceover in chat"),
+        setting_key="VOICEOVER_LOCAL_CHAT", widget_type="checkbutton",
+        default_checkbutton=True,
+    ))
 
     local_config = [
         {'label': _("Язык локальной озвучки", "Local Voice Language"),
@@ -274,10 +284,6 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
         {'label': _('Инициализировать модель при запросе', 'Initialize model on request'),
          'key': 'LOCAL_VOICE_INIT_ON_REQUEST', 'type': 'checkbutton',
          'default_checkbutton': False},
-
-        {'label': _('Озвучивать в чате', 'Voiceover in chat'),
-         'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
-         'default_checkbutton': True},
 
         {'label': _('Перезапустить нейро-ядро озвучки', 'Restart Voice AI Engine'),
          'type': 'button',
@@ -311,5 +317,13 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             local_layout.addWidget(widget)
 
     container_lay.addWidget(self.local_settings_frame)
+
+    from ui.settings.voiceover_settings.remote_api import RemoteVoiceSettingsWidget
+    self.api_settings_frame = SettingsBodyWidget()
+    api_layout = QVBoxLayout(self.api_settings_frame)
+    api_layout.setContentsMargins(0, 0, 0, 0)
+    api_layout.addWidget(RemoteVoiceSettingsWidget(actions.remote))
+    container_lay.addWidget(self.api_settings_frame)
+    container_lay.addWidget(self.playback_settings_frame)
 
     parent_layout.addWidget(container)
