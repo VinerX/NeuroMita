@@ -24,7 +24,6 @@ class GuiFallbackController:
         eb.subscribe(Events.ApiPresets.SET_CURRENT_PRESET_ID, self._on_set_current_preset_id, weak=False)
 
         eb.subscribe(Events.Model.CALCULATE_COST, self._on_get_empty_dict, weak=False)
-        eb.subscribe(Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_update, weak=False)
 
         eb.subscribe(Events.Server.STOP_SERVER, self._on_noop_true, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_noop_true, weak=False)
@@ -76,13 +75,6 @@ class GuiFallbackController:
 
     def _on_get_voice_model_description(self, _event: Event):
         return self._VOICE_MODEL_FALLBACK_DESCRIPTION
-
-    def _on_schedule_update(self, _event: Event):
-        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-            "title": "GUI-only mode",
-            "message": "Update scheduling is disabled because backend controllers are not started.",
-        })
-        return False
 
     def _on_chat_send_message(self, _event: Event):
         self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {

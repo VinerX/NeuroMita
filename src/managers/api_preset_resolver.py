@@ -76,6 +76,8 @@ class ApiPresetResolver:
         # Resolve protocol
         protocol_id = str((preset or {}).get("protocol_id") or "").strip()
         proto = reg.get(protocol_id) if protocol_id else None
+        if protocol_id and proto is None:
+            raise ValueError(f"API protocol is unavailable: {protocol_id}")
         if not proto:
             proto = reg.pick_default()
             protocol_id = proto.id if proto else ""

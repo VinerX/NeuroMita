@@ -19,6 +19,9 @@ class ManagedCharacterRegistry(CharacterRegistry):
     def all_ids(self) -> List[str]:
         return list(self._manager.get_all_characters())
 
+    def stats_of(self, character_id: str) -> Dict[str, float]:
+        return self._manager.get_character_stats(character_id)
+
     def current(self) -> Any:
         return self._manager.current_character
 

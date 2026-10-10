@@ -18,6 +18,7 @@ from managers.tools.tool_manager import ToolManager
 from handlers.llm_providers.base import LLMRequest, LLMResponse
 from schemas.sparse_structured_response import provider_structured_model
 from schemas.structured_response import StructuredResponse
+from services.native_tool_calls import configure_native_tools, bridge_native_tool_response
 from utils.openrouter_routing import (
     build_openrouter_session_id,
     normalize_openrouter_routing,
@@ -303,6 +304,7 @@ class ChatModel:
             caps = dict(preset_settings.capabilities or {})
             if isinstance(capabilities_override, dict):
                 caps.update(capabilities_override)
+            caps['tools_native'] = bool((preset_settings.capabilities or {}).get('tools_native', False))
 
             req = LLMRequest(
                 model=effective_model,
@@ -328,12 +330,16 @@ class ChatModel:
                 native_parameters=native_parameters,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
-                structured_model=(
-                    provider_structured_model(structured_model or StructuredResponse, caps)
-                    if caps.get("structured_output") else structured_model
-                ),
+                structured_model=structured_model,
             )
 
+            tool_decision = configure_native_tools(req, self.settings, self.tool_manager)
+            req.structured_model = (
+                provider_structured_model(structured_model or StructuredResponse, req.capabilities)
+                if caps.get("structured_output") else structured_model
+            )
+            if tool_decision["reason"] == "native_protocol_unsupported":
+                logger.info("Native tools unavailable for %s; using schema tools", req.dialect_id)
             req.extra["tool_manager"] = self.tool_manager
             # UI context inspection must identify this exact request even when
             # finetune collection is disabled or several Mitas answer at once.
@@ -421,6 +427,23 @@ class ChatModel:
         if response_text:
             raw_response_text = response_text.text or ""
             cleaned_response = self._clean_response(response_text.text)
+            response_text.text = cleaned_response
+            try:
+                bridge_native_tool_response(
+                    response_text, _last_req[0], model_cls=structured_model or StructuredResponse,
+                )
+            except (ValueError, TypeError):
+                response_text.text = None
+                response_text.error_message = 'The model returned an invalid native tool response.'
+                response_text.error_details = {"code": "native_tool_call_invalid", "stage": "tools"}
+                from handlers.llm_providers.errors import LLMProviderError
+                self.last_error = LLMProviderError(
+                    provider=_last_req[0].provider_name or '', friendly_message=response_text.error_message,
+                    provider_message='Native tool validation failed', code='native_tool_call_invalid',
+                    retryable=False, phase='response',
+                )
+                return response_text, False
+            cleaned_response = response_text.text
             if cleaned_response:
                 response_text.text = cleaned_response
                 if _last_req[0]:

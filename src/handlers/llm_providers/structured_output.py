@@ -4,25 +4,21 @@ from copy import deepcopy
 from typing import Any
 
 from schemas.structured_response import StructuredResponse
+from schemas.sparse_structured_response import provider_structured_model
+from services.structured_response_capabilities import provider_schema_options
 
 
 def openai_response_format(req: Any) -> dict:
     caps = req.capabilities or {}
     if caps.get('structured_output_mode', 'json_schema') == 'json_object':
         return {'type': 'json_object'}
-    has_custom = bool(caps.get('has_custom_params') or caps.get('custom_params'))
-    excluded = set() if has_custom else {'custom_fields'}
-    if not caps.get('schema_reasoning', True):
-        excluded.add('reasoning')
-    excluded.update(str(name) for name in caps.get('structured_exclude_fields') or () if str(name).strip())
-    segment_excluded = set(caps.get('structured_segment_exclude_fields') or ())
-    if not caps.get('schema_intents', True):
-        segment_excluded.add('intents')
-    return (req.structured_model or StructuredResponse).openai_response_format(
-        exclude_fields=excluded or None,
+    options = provider_schema_options(caps)
+    model = provider_structured_model(req.structured_model or StructuredResponse, caps)
+    return model.openai_response_format(
+        exclude_fields=options['exclude_fields'] or None,
         custom_params=caps.get('custom_params') or None,
-        exclude_segment_fields=segment_excluded or None,
-        require_fields=set(caps.get('structured_required_fields') or ()) or None,
+        exclude_segment_fields=options['exclude_segment_fields'] or None,
+        require_fields=options['require_fields'] or None,
     )
 
 

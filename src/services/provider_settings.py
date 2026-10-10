@@ -107,3 +107,7 @@ def run_account_action(protocol_id: str, action: str, account_id: str = '') -> d
 
 def list_provider_accounts(protocol_id: str) -> list[dict[str, Any]]:
     return authentication_service(protocol_id).list_accounts()
+
+
+def get_provider_account_status(protocol_id: str) -> dict[str, Any]:
+    return authentication_service(protocol_id).status()

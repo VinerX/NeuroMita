@@ -13,7 +13,7 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from handlers.llm_providers.gemini_provider import GeminiProvider
-from handlers.llm_providers.openai_http_base import OpenAIHTTPProviderBase
+from handlers.llm_providers.protocols.chat_completions.request import apply_reasoning
 from presets.api_templates import API_TEMPLATES_DATA
 from presets.model_profiles import resolve_model_profile
 
@@ -237,7 +237,7 @@ class OpenRouterProfilePayloadTests(unittest.TestCase):
             capabilities={"reasoning_control": "openrouter"},
         )
 
-        OpenAIHTTPProviderBase._apply_reasoning(payload, request)
+        apply_reasoning(payload, request)
 
         self.assertEqual(payload["reasoning"], {"enabled": True, "effort": "medium"})
 

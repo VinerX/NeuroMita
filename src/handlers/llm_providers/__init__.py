@@ -5,10 +5,8 @@ from importlib import import_module
 from .base import BaseProvider, LLMRequest, LLMResponse
 
 _LAZY_EXPORTS = {
-    "OpenAIProvider": ("handlers.llm_providers.openai_provider", "OpenAIProvider"),
     "GeminiProvider": ("handlers.llm_providers.gemini_provider", "GeminiProvider"),
     "CommonProvider": ("handlers.llm_providers.common_provider", "CommonProvider"),
-    "G4FProvider": ("handlers.llm_providers.g4f_provider", "G4FProvider"),
 }
 
 

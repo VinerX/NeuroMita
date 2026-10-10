@@ -593,7 +593,6 @@ class Events:
         LOAD_HISTORY = "load_history"
         GET_CHAT_HISTORY = "get_chat_history"
         LOAD_MORE_HISTORY = "load_more_history"
-        SCHEDULE_G4F_UPDATE = "schedule_g4f_update"
         GET_CURRENT_CONTEXT_TOKENS = "get_current_context_tokens"
         GET_TOKEN_STATS = "get_token_stats"
         CALCULATE_COST = "calculate_cost"

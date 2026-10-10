@@ -1,4 +1,5 @@
 from __future__ import annotations
+from services.native_tool_calls import persisted_native_tool_messages
 from core.error_utils import format_exception
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -1828,6 +1829,12 @@ class HistoryController(HistoryService):
                     gap_marker = self._format_time_gap(gap_seconds)
             if current_at:
                 previous_at = current_at
+
+            if role == 'assistant':
+                native_history = persisted_native_tool_messages(m.get('structured_data'))
+                if native_history:
+                    out.extend(native_history)
+                    continue
 
             content = self._apply_llm_prefix(role, speaker, target, content)
             if gap_marker:

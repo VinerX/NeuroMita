@@ -85,7 +85,48 @@ def _bare_worker(proc: _FakeProc) -> _Worker:
     return worker
 
 
+def _wait_for_stop(started):
+    started.set()
+    time.sleep(60)
+
+
 class WorkerAdmissionTests(unittest.TestCase):
+    def test_force_stop_terminates_real_process(self):
+        import multiprocessing
+        ctx = multiprocessing.get_context("spawn")
+        started = ctx.Event()
+        proc = ctx.Process(target=_wait_for_stop, args=(started,))
+        proc.start()
+        try:
+            self.assertTrue(started.wait(10))
+            worker = _bare_worker(proc)
+            worker.stop(timeout=0)
+            self.assertFalse(proc.is_alive())
+            self.assertIsNotNone(proc.exitcode)
+        finally:
+            if proc.is_alive():
+                proc.kill()
+            proc.join(timeout=2)
+            proc.close()
+
+    def test_stop_reports_process_that_survives_terminate_and_kill(self):
+        class Unstoppable(_FakeProc):
+            def terminate(self):
+                pass
+
+            def join(self, timeout=None):
+                pass
+
+            def kill(self):
+                pass
+
+        worker = _bare_worker(Unstoppable())
+        with self.assertRaisesRegex(RuntimeError, "still alive"):
+            worker.stop(timeout=0)
+        self.assertFalse(worker.cmd_q.closed)
+        worker.proc.alive = False
+        worker.stop(timeout=0)
+
     def test_stop_cannot_cut_in_between_check_and_enqueue(self):
         """Пока запрос принимается, остановка обязана ждать своей очереди."""
         stop_entered = threading.Event()

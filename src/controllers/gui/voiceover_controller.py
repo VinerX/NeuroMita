@@ -735,6 +735,9 @@ class VoiceoverGuiController(BaseController):
         self._apply_voiceover_visibility_from_widgets()
         self._set_local_voice_loading_placeholders()
 
+        if not self._effective_use_voice():
+            self._emit_voice_icon_state()
+
         ticket = int(getattr(self, "_sync_ticket", 0) or 0) + 1
         self._sync_ticket = ticket
 
@@ -780,7 +783,11 @@ class VoiceoverGuiController(BaseController):
                 return
             self._apply_voiceover_snapshot(snapshot, allow_autoload=allow_autoload)
 
-        self._run_async(worker, apply, name="voiceover-sync")
+        def failed(_error):
+            if ticket == int(getattr(self, "_sync_ticket", 0) or 0):
+                self._emit_voice_icon_state()
+
+        self._run_async(worker, apply, failed, name="voiceover-sync")
 
     def _apply_voiceover_snapshot(self, snapshot: dict, *, allow_autoload: bool):
         cfgs = snapshot.get("cfgs") if isinstance(snapshot, dict) else []

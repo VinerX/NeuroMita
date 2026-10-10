@@ -4,14 +4,40 @@ from PyQt6.QtWidgets import QMessageBox, QMenu
 
 from utils import _
 from presets.api_endpoints import resolve_api_url, resolve_test_url
-from presets.model_selection import select_catalog_model
+from presets.model_selection import normalize_catalog_models, select_catalog_model
 from core.networking.errors import valid_http_url
 from core.events import Events
 from ui.settings.api_settings.dialogs.models_loaded_dialog import ModelsLoadedDialog
-from services.provider_settings import describe_protocol, list_provider_accounts
+from services.provider_settings import describe_protocol, get_provider_account_status, list_provider_accounts
 
 
 class TestMixin:
+    def _set_account_status(self, protocol_id: str, status: dict) -> None:
+        self._account_status_protocol = protocol_id
+        self._account_status = dict(status)
+        self._account_status_serial = getattr(self, '_account_status_serial', 0) + 1
+
+    def _can_load_account_models(self, protocol_id: str) -> bool:
+        if getattr(self, '_account_status_protocol', None) != protocol_id:
+            return False
+        status = getattr(self, '_account_status', {})
+        return bool(status.get('signed_in') and status.get('plan_usage_enabled', False))
+
+    def _ensure_account_status(self, protocol_id: str) -> None:
+        if getattr(self, '_account_status_protocol', None) == protocol_id:
+            return
+        self._set_account_status(protocol_id, {})
+        serial = self._account_status_serial
+
+        def apply(status):
+            if serial != self._account_status_serial or protocol_id != self._current_protocol_id_ui():
+                return
+            self._set_account_status(protocol_id, status)
+            self._apply_provider_ui(protocol_id)
+
+        self._bus_call_async(lambda: get_provider_account_status(protocol_id), apply,
+                             lambda _exc: apply({}), name='provider-account-status')
+
     def _load_account_models(self) -> None:
         self._test_connection(action='list_models')
 
@@ -30,7 +56,8 @@ class TestMixin:
                     self._test_connection(action='select_account', account_id=aid))
             menu.addSeparator()
             menu.addAction(_("Добавить аккаунт", "Add account"), lambda: self._test_connection(action='add_account'))
-            menu.addAction(_("Обновить список моделей", "Refresh models"), lambda: self._test_connection(action='list_models'))
+            refresh = menu.addAction(_("Обновить список моделей", "Refresh models"), lambda: self._test_connection(action='list_models'))
+            refresh.setEnabled(self._can_load_account_models(protocol_id) and not bool(self.view.test_button.property('apiTesting')))
             menu.addAction(_("Выйти", "Sign out"), lambda: self._test_connection(action='sign_out'))
             button = self.view.account_button
             menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
@@ -40,6 +67,11 @@ class TestMixin:
 
     def _test_connection(self, *, action: str = '', account_id: str = '') -> None:
         v = self.view
+        if v.test_button.property('apiTesting'):
+            return
+        protocol_id = self._current_protocol_id_ui()
+        if action == 'list_models' and not self._can_load_account_models(protocol_id):
+            return
         base_id = v.template_combo.currentData()
         try:
             base_id = int(base_id) if base_id is not None else None
@@ -104,14 +136,14 @@ class TestMixin:
 
     def _process_test_result(self, data: dict):
         v = self.view
+        account = data.get('account')
+        if isinstance(account, dict):
+            self._set_account_status(self._current_protocol_id_ui(), account)
         v.test_button.setEnabled(True)
         v.test_button.setProperty("apiTesting", False)
         v.test_button.setText(_("Проверить", "Check"))
         self._apply_help_links(getattr(self, "_last_help_preset", {}) or {})
         self._apply_provider_ui(self._current_protocol_id_ui())
-        account = data.get('account') or {}
-        if account and hasattr(v, 'account_button'):
-            v.account_button.setText(str(account.get('email') if account.get('signed_in') else _("Аккаунты", "Accounts")))
 
         success = bool(data.get("success"))
         if success and data.get('show_plan_usage_notice'):
@@ -126,14 +158,10 @@ class TestMixin:
         if not isinstance(model_infos, list):
             model_infos = []
 
-        # нормализуем список
-        cleaned: list[str] = []
-        seen = set()
-        for m in models:
-            s = str(m or "").strip()
-            if s and s not in seen:
-                seen.add(s)
-                cleaned.append(s)
+        cleaned = normalize_catalog_models(models)
+        if success and 'models' in data:
+            self.current_preset_data['known_models'] = list(cleaned)
+            self._set_model_suggestions(cleaned)
 
         if success and cleaned:
             preset = getattr(self, 'current_preset_data', None) or {}
@@ -144,11 +172,6 @@ class TestMixin:
                 if selected != current:
                     v.api_model_row.set_text(selected)
                     self._on_field_changed()
-            try:
-                v.api_model_list_model.setStringList(cleaned)
-            except Exception:
-                pass
-
             try:
                 dlg = ModelsLoadedDialog(v, models=cleaned, model_infos=model_infos, message=msg)
                 if dlg.exec() == dlg.DialogCode.Accepted:
@@ -171,6 +194,7 @@ class TestMixin:
 
     def _process_test_failed(self, data: dict):
         v = self.view
+        self._set_account_status('', {})
         v.test_button.setEnabled(True)
         v.test_button.setProperty("apiTesting", False)
         v.test_button.setText(_("Проверить", "Check"))

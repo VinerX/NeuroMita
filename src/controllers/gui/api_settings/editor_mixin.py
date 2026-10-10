@@ -15,6 +15,7 @@ from styles.theme import THEME
 from core.events import Events
 from core.services import use
 from services.contracts import ApiPresetService
+from presets.model_selection import normalize_catalog_models
 from main_logger import logger
 from core.networking.errors import valid_http_url
 from .state import PresetSnapshot
@@ -26,6 +27,12 @@ from presets.api_endpoints import (
 )
 
 class EditorMixin:
+    def _set_model_suggestions(self, models) -> None:
+        completer = getattr(self.view, 'api_model_completer', None)
+        if completer is not None:
+            completer.popup().hide()
+        self.view.api_model_list_model.setStringList(normalize_catalog_models(models))
+
     def _parse_base(self, value: Any) -> Optional[int]:
         try:
             return int(value) if value is not None else None
@@ -204,6 +211,8 @@ class EditorMixin:
 
         v = self.view
         template_id = self._parse_base(v.template_combo.currentData())
+        self._set_model_suggestions([])
+        self.current_preset_data['known_models'] = None
         self._protocol_overrides = {}
 
         if template_id is None:
@@ -229,7 +238,7 @@ class EditorMixin:
             return use(ApiPresetService).get_full(int(template_id))
 
         def _apply(tpl: dict | None):
-            if not tpl:
+            if not tpl or self._parse_base(v.template_combo.currentData()) != template_id:
                 return
 
             self._is_loading_ui = True
@@ -266,9 +275,7 @@ class EditorMixin:
             v.api_url_row.set_enabled(bool(tpl.get("url_editable")))
             v.api_test_url_row.setVisible(False)
 
-            known_models = tpl.get("known_models", []) or []
-            if isinstance(known_models, list) and known_models:
-                v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
+            self._set_model_suggestions(tpl.get('known_models'))
 
             self._apply_help_links(tpl)
             self._refresh_model_settings_dialect()
@@ -315,6 +322,7 @@ class EditorMixin:
     def _build_current_preset_payload(self, *, preset_id: int | None, name: str | None = None) -> dict:
         v = self.view
         data = dict(self.current_preset_data or {})
+        data.pop('known_models', None)
         data["id"] = preset_id
         data["name"] = str(name if name is not None else v.preset_name_row.text()).strip()
         if not data["name"]:

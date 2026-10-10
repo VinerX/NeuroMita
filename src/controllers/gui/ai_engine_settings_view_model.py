@@ -30,6 +30,7 @@ class AIEngineSettingsState:
     maintenance_error: str = ""
     backends_error: str = ""
     busy: bool = False
+    reset_running: bool = False
     error: str = ""
 
 
@@ -124,16 +125,23 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
         self.run_latest(
             "ai-engine-maintenance-refresh",
             self._read_maintenance,
-            lambda result: self.update_state(
-                maintenance=result,
-                maintenance_loading=False,
-                maintenance_error="",
-            ),
+            self._apply_maintenance_refresh,
             lambda exc: self.update_state(
                 maintenance_loading=False,
                 maintenance_error=format_exception(exc),
                 error=format_exception(exc),
             ),
+        )
+
+    def _apply_maintenance_refresh(self, snapshot: dict[str, Any]) -> None:
+        if self.state.reset_running:
+            self.update_state(maintenance_loading=False)
+            return
+        if int(snapshot.get("revision", 0)) < int(self.state.maintenance.get("revision", 0)):
+            self.update_state(maintenance_loading=False)
+            return
+        self.update_state(
+            maintenance=snapshot, maintenance_loading=False, maintenance_error="",
         )
 
     def refresh_backends(self, *, force: bool = False) -> None:
@@ -187,12 +195,23 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
         )
 
     def reset_environments(self) -> None:
-        self.update_state(busy=True, error="")
+        if self.state.busy or self.state.reset_running or self.state.maintenance.get("busy"):
+            return
+        self.update_state(
+            busy=True, reset_running=True, maintenance_error="", error="",
+            maintenance={
+                **self.state.maintenance,
+                "state": "validating", "busy": True,
+                "message": "Подготовка к удалению…", "error": "",
+            },
+        )
 
         def progress(snapshot: dict[str, Any]) -> None:
+            topology = self._read_topology()
             self._post_ui(
                 lambda snapshot=dict(snapshot): self.update_state(
                     maintenance=snapshot,
+                    topology=topology,
                     busy=True,
                     error=str(snapshot.get("error") or ""),
                 )
@@ -217,6 +236,7 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             lambda result: self.update_state(
                 **result,
                 busy=False,
+                reset_running=False,
                 topology_error="",
                 maintenance_error="",
                 backends_error="",
@@ -224,6 +244,12 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 busy=False,
+                reset_running=False,
+                maintenance={
+                    **self.state.maintenance,
+                    "state": "failed", "busy": False,
+                    "error": format_exception(exc),
+                },
                 maintenance_error=format_exception(exc),
                 error=format_exception(exc),
             ),

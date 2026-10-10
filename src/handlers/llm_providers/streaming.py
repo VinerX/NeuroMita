@@ -14,6 +14,7 @@ from .base import (
     LLMRequest,
     LLMResponse,
     LLMUsage,
+    ToolCall,
     RequestCancellation,
     StreamChannel,
     get_request_cancellation,
@@ -204,6 +205,7 @@ class StreamAccumulator:
         self.model = str(model or req.model or "")
         self.text_parts: list[str] = []
         self.reasoning_parts: list[str] = []
+        self.tool_calls: list[ToolCall] = []
         self.usage: Optional[LLMUsage] = None
         self.finish_reason: Optional[str] = None
         channel = (req.extra or {}).get("_stream_event_channel")
@@ -261,6 +263,9 @@ class StreamAccumulator:
             return
         self.usage = usage
 
+    def set_tool_calls(self, calls: Iterable[ToolCall]) -> None:
+        self.tool_calls = list(calls)
+
     def tool_call_started(self, *, tool_call_id: str, tool_name: str) -> None:
         self.emit(
             LLMStreamEventType.TOOL_CALL_STARTED,
@@ -290,11 +295,11 @@ class StreamAccumulator:
         # text — только то, что видит игрок; мысли уезжают отдельным полем.
         # Аварийный фолбэк на случай, когда модель кладёт весь ответ в
         # reasoning-канал и оставляет content пустым.
-        visible, reasoning = resolve_content_and_reasoning(
-            "".join(self.text_parts),
-            "".join(self.reasoning_parts),
-            provider_name=self.provider_display_name,
-        )
+        visible, reasoning = "".join(self.text_parts), "".join(self.reasoning_parts)
+        if not self.tool_calls:
+            visible, reasoning = resolve_content_and_reasoning(
+                visible, reasoning, provider_name=self.provider_display_name,
+            )
         return LLMResponse(
             text=visible or None,
             usage=self.usage,
@@ -303,6 +308,7 @@ class StreamAccumulator:
             provider_display_name=self.provider_display_name,
             finish_reason=self.finish_reason,
             reasoning=reasoning or None,
+            tool_calls=list(self.tool_calls),
         )
 
 

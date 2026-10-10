@@ -153,15 +153,16 @@ def test_provider_streams_through_shared_event_channel(monkeypatch):
 
 
 def test_native_tool_response_uses_existing_application_contract(monkeypatch):
-    from schemas.structured_response import StructuredResponse
     output = {'type': 'function_call', 'call_id': 'c1', 'name': 'neuromita.lookup', 'arguments': '{"query":"abc"}'}
     body = 'data: ' + json.dumps({'type': 'response.completed', 'response': {'output': [output]}}) + '\n\n'
     monkeypatch.setattr('handlers.llm_providers.chatgpt_plan_provider.get_chatgpt_plan_auth', lambda: FakeAuth())
     response = ChatGPTPlanProvider(http_transport=SimpleNamespace(post_json=lambda *args, **kwargs: httpx.Response(200, content=body))).generate(
         LLMRequest(model='model', messages=[], tools_on=True, tools_payload=[{'name': 'lookup', 'parameters': {'type': 'object'}}]))
-    structured = StructuredResponse.model_validate_json(response.text)
-    assert structured.tool_call.name == 'lookup'
-    assert structured.tool_call.args == {'query': 'abc'}
+    assert response.text == ''
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == 'lookup'
+    assert response.tool_calls[0].arguments == {'query': 'abc'}
+    assert response.tool_calls[0].id == 'c1'
 
 
 def test_transport_does_not_follow_redirect_with_bearer_credentials():

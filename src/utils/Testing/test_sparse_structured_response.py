@@ -355,39 +355,19 @@ def test_gamemaster_and_legacy_provider_selection_remain_unchanged():
     assert provider_structured_model(StructuredResponse, {"structured_response_profile": profile()}) is build_sparse_response_model(StructuredResponse, profile())
 
 
-def test_openai_http_and_sdk_and_gemini_send_same_sparse_union():
+def test_chat_adapter_and_gemini_send_same_sparse_union():
     import httpx
     from handlers.llm_providers.base import LLMRequest
-    from handlers.llm_providers.common_provider import CommonProvider
     from handlers.llm_providers.gemini_provider import GeminiProvider
-    from handlers.llm_providers.openai_compatible import OpenAICompatibleProvider
+    from handlers.llm_providers.protocols.registry import adapter_for
     from unittest.mock import Mock
-
     caps = {"structured_output": True, "structured_response_profile": profile()}
     req = LLMRequest(model="test", messages=[], capabilities=caps, structured_model=StructuredResponse,
-        api_url="https://example.test", provider_name="common")
-    transport = Mock()
-    http_provider = CommonProvider(http_transport=transport)
-    expected = http_provider._build_payload(req, "test", [])["response_format"]
+                     api_url="https://example.test", provider_name="gemini")
+    expected = adapter_for("openai_chat_completions").encode(req, wire_stream=False)["response_format"]
     assert expected["json_schema"]["strict"] is True
-    captured = {}
-
-    class SDK(OpenAICompatibleProvider):
-        name = "mock"
-        def is_applicable(self, req):
-            return True
-        def _get_client(self, req):
-            client = Mock()
-            def create(**kwargs):
-                captured.update(kwargs)
-                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"segments":[{"text":"Hi"}],"changes":[]}'), finish_reason="stop")], usage=None, model="test")
-            client.chat.completions.create.side_effect = create
-            return client
-
-    assert SDK(http_transport=transport).generate(req).text
-    assert captured["response_format"] == expected
+    transport = Mock()
     transport.post_json.return_value = httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "Hi"}]}}]})
-    req.provider_name = "gemini"
     GeminiProvider(http_transport=transport).generate(req)
     gemini_schema = transport.post_json.call_args.kwargs["payload"]["generationConfig"]["responseJsonSchema"]
     assert gemini_schema == expected["json_schema"]["schema"]

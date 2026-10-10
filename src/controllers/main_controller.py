@@ -206,9 +206,6 @@ class MainController:
         self.loop_controller = self._build_component("loop", LoopController)
         logger.notify("LoopController initialized.")
 
-        with startup_trace.phase("controller.pending_update"):
-            self._check_and_perform_pending_update()
-
         self.ai_engine_controller = self._build_component(
             "ai_engine", AIEngineController
         )
@@ -657,10 +654,6 @@ class MainController:
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(
-            Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_g4f_update, weak=False
-        )
-
-        self.event_bus.subscribe(
             Events.GUI.SHOW_LOADING_POPUP, self._on_show_loading_popup, weak=False
         )
         self.event_bus.subscribe(
@@ -771,21 +764,6 @@ class MainController:
         )
         shutdown_step("executor pools", lambda: executors().shutdown_all(wait=False))
         logger.info("Закрываемся")
-
-    def _check_and_perform_pending_update(self):
-        update_pending = self.settings.get("G4F_UPDATE_PENDING", False)
-        if not update_pending:
-            return
-        self.settings.set("G4F_UPDATE_PENDING", False)
-        self.settings.set("G4F_TARGET_VERSION", None)
-        self.settings.save_settings()
-        logger.warning("Сброшено устаревшее запланированное обновление g4f.")
-
-    def _on_schedule_g4f_update(self, event: Event):
-        logger.warning(
-            "Запрос обновления g4f отклонён: автоматическая установка отключена."
-        )
-        return False
 
     def _on_show_loading_popup(self, event: Event):
         message = event.data.get("message", "Loading...")

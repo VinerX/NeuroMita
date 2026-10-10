@@ -450,10 +450,6 @@ if BUILD_MODE in ("full", "fast"):
                 path.relative_to(src_dir).as_posix()
                 for path in (src_dir / "ui" / "icons").rglob("*.svg")
             )
-            required_ui_resources.update(
-                path.relative_to(src_dir).as_posix()
-                for path in (src_dir / "model_settings" / "defaults").glob("*.json")
-            )
             missing_ui_resources = required_ui_resources.difference(zf.namelist())
             if missing_ui_resources:
                 raise RuntimeError(f"Missing UI resources in .pyz: {sorted(missing_ui_resources)}")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from importlib.resources import files
 import json
 import os
 from pathlib import Path
@@ -9,11 +8,13 @@ import tempfile
 from threading import RLock
 
 from core.app_paths import settings_path
+from .builtins import BUILTIN_SCHEMAS
+from .bundled_json_compat import is_bundled_json_copy
 from .schema import SchemaError, SettingsSchema
 
 
 class SchemaRepository:
-    """Versioned JSON catalog; bundled resources also work inside a zipapp."""
+    """Built-in Python definitions with versioned external JSON overrides."""
 
     def __init__(self, directory: Path | None = None):
         self.directory = directory if directory is not None else settings_path("APIModelSchemas")
@@ -26,32 +27,34 @@ class SchemaRepository:
         with self._lock:
             self.directory.mkdir(parents=True, exist_ok=True)
             if self._defaults is None:
-                bundled = files("model_settings").joinpath("defaults")
-                self._defaults = {}
-                for resource in sorted(bundled.iterdir(), key=lambda item: item.name):
-                    if resource.name.endswith(".json"):
-                        schema = SettingsSchema.from_dict(json.loads(resource.read_text(encoding="utf-8")))
-                        self._defaults[schema.data["id"]] = schema
-                        destination = self.directory / resource.name
-                        if not destination.exists():
-                            self._write(destination, schema.data)
+                self._defaults = {
+                    identifier: SettingsSchema.from_dict(definition)
+                    for identifier, definition in BUILTIN_SCHEMAS.items()
+                }
             paths = sorted(self.directory.glob("*.json"))
             signature = tuple((path.name, path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
             if signature == self._signature:
                 return deepcopy(self._cached)
-            result = dict(self._defaults)
+            result = deepcopy(self._defaults)
             external = {}
             for path in paths:
                 try:
-                    schema = SettingsSchema.from_dict(json.loads(path.read_text(encoding="utf-8-sig")))
+                    definition = json.loads(path.read_text(encoding="utf-8-sig"))
+                    if isinstance(definition, dict) and definition.get("dialect") == "g4f":
+                        continue
+                    schema = SettingsSchema.from_dict(definition)
                 except (ValueError, OSError) as exc:
                     raise SchemaError(f"{path.name}: {exc}") from exc
                 identifier = schema.data["id"]
-                if identifier == 'chatgpt-plan' and schema.data['dialect'] == 'openai_chat_completions':
-                    schema = SettingsSchema.from_dict({**schema.data, 'dialect': 'openai_responses'})
                 if identifier in external:
                     raise SchemaError(f"Duplicate external schema id: {identifier}")
                 external[identifier] = schema
+                if identifier in self._defaults and is_bundled_json_copy(schema.data):
+                    continue
+                if identifier == 'chatgpt-plan' and schema.data['dialect'] == 'openai_chat_completions':
+                    schema = SettingsSchema.from_dict({**schema.data, 'dialect': 'openai_responses'})
+                if identifier in result and schema.data['dialect'] != result[identifier].data['dialect']:
+                    raise SchemaError(f"{path.name}: A schema update cannot change its dialect")
                 if identifier not in result or schema.data["revision"] >= result[identifier].data["revision"]:
                     result[identifier] = schema
             self._signature = signature

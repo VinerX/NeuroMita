@@ -152,13 +152,8 @@ def generate_suite(
     Returns:
         TestSuite dict ready for JSON serialization
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise ImportError(
-            "openai package is required for suite generation. "
-            "Install with: pip install openai"
-        )
+    from handlers.llm_providers.base import LLMRequest
+    from handlers.llm_providers.common_provider import CommonProvider
 
     # Load scenario
     with open(scenario_path, "r", encoding="utf-8") as f:
@@ -184,84 +179,84 @@ def generate_suite(
         if len(window) >= 3:  # skip tiny windows
             windows.append(window)
 
-    # Initialize OpenAI client
-    client = OpenAI(
-        base_url=config.api_base,
-        api_key=config.api_key,
-    )
+    client = CommonProvider()
 
     all_cases: list[dict] = []
     seen_queries: list[str] = []
 
-    for wi, window in enumerate(windows):
-        if len(all_cases) >= config.num_cases:
-            break
+    try:
+        for wi, window in enumerate(windows):
+            if len(all_cases) >= config.num_cases:
+                break
 
-        if progress_callback:
-            progress_callback(wi + 1, len(windows), len(all_cases))
+            if progress_callback:
+                progress_callback(wi + 1, len(windows), len(all_cases))
 
-        # Format messages for the prompt
-        formatted = "\n\n".join(_format_message(m) for m in window)
-        prompt = WINDOW_PROMPT_TEMPLATE.format(
-            formatted_messages=formatted,
-            n_positive=config.positive_per_window,
-            n_negative=config.negative_per_window,
-        )
-
-        try:
-            response = client.chat.completions.create(
-                model=config.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=config.temperature,
-                max_tokens=config.max_tokens,
+            # Format messages for the prompt
+            formatted = "\n\n".join(_format_message(m) for m in window)
+            prompt = WINDOW_PROMPT_TEMPLATE.format(
+                formatted_messages=formatted,
+                n_positive=config.positive_per_window,
+                n_negative=config.negative_per_window,
             )
 
-            reply = response.choices[0].message.content or ""
-            cases = _parse_json_from_response(reply)
+            try:
+                response = client.generate(LLMRequest(
+                    model=config.model, api_url=config.api_base, api_key=config.api_key,
+                    dialect_id="openai_chat_completions",
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    native_parameters={"temperature": config.temperature, "max_tokens": config.max_tokens},
+                ))
 
-            for case in cases:
-                if not isinstance(case, dict):
-                    continue
-                query = str(case.get("query", "")).strip()
-                if not query:
-                    continue
+                reply = response.text or ""
+                cases = _parse_json_from_response(reply)
 
-                expected_ids = case.get("expected_ids", [])
-                relevance_grades = case.get("relevance_grades", {})
-                description = str(case.get("description", ""))
+                for case in cases:
+                    if not isinstance(case, dict):
+                        continue
+                    query = str(case.get("query", "")).strip()
+                    if not query:
+                        continue
 
-                # Validate: remove IDs not in scenario
-                valid_ids = [eid for eid in expected_ids if str(eid) in all_ids]
-                valid_grades = {k: v for k, v in relevance_grades.items() if k in all_ids}
+                    expected_ids = case.get("expected_ids", [])
+                    relevance_grades = case.get("relevance_grades", {})
+                    description = str(case.get("description", ""))
 
-                # Deduplication: skip if too similar to existing query
-                is_dup = any(
-                    _jaccard_tokens(query, existing) > config.dedup_threshold
-                    for existing in seen_queries
-                )
-                if is_dup:
-                    continue
+                    # Validate: remove IDs not in scenario
+                    valid_ids = [eid for eid in expected_ids if str(eid) in all_ids]
+                    valid_grades = {k: v for k, v in relevance_grades.items() if k in all_ids}
 
-                tc: dict = {
-                    "query": query,
-                    "expected_ids": valid_ids,
-                    "description": description,
-                }
-                if valid_grades:
-                    tc["relevance_grades"] = valid_grades
+                    # Deduplication: skip if too similar to existing query
+                    is_dup = any(
+                        _jaccard_tokens(query, existing) > config.dedup_threshold
+                        for existing in seen_queries
+                    )
+                    if is_dup:
+                        continue
 
-                all_cases.append(tc)
-                seen_queries.append(query)
+                    tc: dict = {
+                        "query": query,
+                        "expected_ids": valid_ids,
+                        "description": description,
+                    }
+                    if valid_grades:
+                        tc["relevance_grades"] = valid_grades
 
-                if len(all_cases) >= config.num_cases:
-                    break
+                    all_cases.append(tc)
+                    seen_queries.append(query)
 
-        except Exception as e:
-            print(f"  Window {wi+1}: LLM error: {e}", file=sys.stderr)
-            continue
+                    if len(all_cases) >= config.num_cases:
+                        break
+
+            except Exception as e:
+                print(f"  Window {wi+1}: LLM error: {e}", file=sys.stderr)
+                continue
+
+    finally:
+        client.close()
 
     # Build suite
     suite = {

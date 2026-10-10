@@ -390,9 +390,30 @@ def test_failed_language_save_restores_saved_selection_and_does_not_apply(panel,
 def test_language_control_disables_when_no_engine_is_available(panel, monkeypatch):
     root, controller, _ = panel
     _language_catalog(monkeypatch)
+    root.asr_language_combobox.setToolTip('Previous model language')
     controller._refresh_asr_language()
     assert not root.asr_language_combobox.isEnabled()
     assert root.asr_language_combobox.count() == 0
+    assert root.asr_language_combobox.placeholderText()
+    assert not root.asr_language_combobox.toolTip()
+
+
+def test_language_control_is_inside_recognition_parameters(panel):
+    root, _, _ = panel
+    assert root.asr_recognition_parameters_card.isAncestorOf(root.asr_language_combobox)
+    assert root.asr_recognition_parameters_card.isAncestorOf(root.asr_language_hint)
+
+
+def test_model_without_language_options_has_label_without_fake_value(panel, monkeypatch):
+    root, controller, _ = panel
+    catalog = _language_catalog(monkeypatch)
+    catalog.settings_schema = lambda _component: [{'key': 'language', 'options': []}]
+    root.recognizer_combobox.addItem('unknown')
+    controller._refresh_asr_language()
+    assert not root.asr_language_combobox.isEnabled()
+    assert root.asr_language_combobox.count() == 0
+    assert root.asr_language_combobox.placeholderText()
+    controller.event_bus.emit.assert_not_called()
 
 
 def test_ai_hub_language_labels_keep_codes_and_fixed_language_is_locked(panel):

@@ -97,6 +97,10 @@ class LLMRequest:
 
     structured_model: Optional[Any] = None
 
+    @property
+    def wire_stream(self) -> bool:
+        return bool(self.stream or (self.capabilities or {}).get("force_wire_stream"))
+
 
 @dataclass
 class LLMUsage:
@@ -160,6 +164,19 @@ class LLMUsage:
         }
 
 
+@dataclass(frozen=True)
+class ToolCall:
+    name: str
+    arguments: Dict[str, Any]
+    id: str
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    id: str
+    content: str
+
+
 @dataclass
 class LLMResponse:
     text: Optional[str]
@@ -177,6 +194,8 @@ class LLMResponse:
     # Размышления, которые провайдер отдал отдельным каналом. В text их быть
     # не должно: text — только то, что видит игрок.
     reasoning: Optional[str] = None
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    protocol_history: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def _to_int(value: Any) -> int:
@@ -292,6 +311,8 @@ __all__ = [
     "LLMRequest",
     "LLMUsage",
     "LLMResponse",
+    "ToolCall",
+    "ToolResult",
     "BaseProvider",
     "RequestCancellation",
     "RequestCancelledError",

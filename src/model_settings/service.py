@@ -14,8 +14,8 @@ class ModelSettingsService:
         self.repository = repository if repository is not None else SchemaRepository()
 
     def default_id(self, dialect: str, suggested: str = "") -> str:
-        identifier = suggested or {"gemini_generate_content": "google-level", "g4f": "g4f",
-                                   "openai_responses": "chatgpt-plan"}.get(dialect, "openai-compatible")
+        identifier = suggested or {"gemini_generate_content": "google-level",
+                                   "openai_responses": "openai-responses"}.get(dialect, "openai-compatible")
         schema = self.repository.get(identifier)
         self.check_dialect(schema, dialect)
         return identifier

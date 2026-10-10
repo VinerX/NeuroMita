@@ -44,6 +44,7 @@ from core.request_policy import RequestPolicy, resolve_policy
 from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
+from services.native_tool_calls import resolve_tool_mode, native_tool_followup_messages, validate_runtime_native_call
 from services.structured_response_capabilities import (
     StructuredResponseCapabilities,
     resolve_structured_response_capabilities,
@@ -913,13 +914,6 @@ class ModelController(GenerationService, ModelStateService):
     def token_stats(self) -> dict[str, Any]:
         return self._build_token_stats()
 
-    def schedule_g4f_update(self, version: str = "latest") -> bool:
-        logger.warning(
-            "g4f automatic installation and update scheduling are disabled; "
-            "an already installed package may still be used"
-        )
-        return False
-
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
         requested_cid = self._normalize_character_id_from_data(data)
@@ -1640,6 +1634,16 @@ class ModelController(GenerationService, ModelStateService):
             sparse_enabled=bool(effective_capabilities.get("sparse_response", False)),
         )
         effective_capabilities["structured_response_profile"] = profile
+        tool_decision = resolve_tool_mode(
+            self.settings, effective_capabilities, getattr(effective_preset, "dialect_id", ""),
+        )
+        effective_capabilities['tool_mode'] = tool_decision
+        if tool_decision["effective"] == "native":
+            profile = dataclasses.replace(
+                profile, excluded_fields=tuple(sorted(set(profile.excluded_fields) | {"tool_call"})),
+            )
+            effective_capabilities["structured_response_profile"] = profile
+            effective_capabilities["tools_prompt"] = "Use the advertised native functions to call tools."
         effective_capabilities["working_state"] = "working_state" not in profile.excluded_fields
         effective_capabilities["structured_prompt_features"] = profile.prompt_features()
         effective_capabilities.update({
@@ -1796,6 +1800,9 @@ class ModelController(GenerationService, ModelStateService):
                 )
 
             raw_text = llm_response.text
+            effective_capabilities['tool_mode'] = (llm_response.raw or {}).get(
+                'tool_mode', effective_capabilities.get('tool_mode'),
+            )
             response_provider_display_name = (
                 llm_response.provider_display_name or llm_response.provider_name or ""
             )
@@ -1845,6 +1852,8 @@ class ModelController(GenerationService, ModelStateService):
                     preset_id=preset_id,
                     tools_on=_tools_on,
                     enabled_tools=_enabled_tools,
+                    native_tool_call=(llm_response.raw or {}).get("native_tool_call"),
+                    request_cancellation=request.cancellation,
                     tool_depth=0,
                     image_descriptions=image_descriptions,
                     structured_model_cls=structured_model_cls,
@@ -2133,7 +2142,11 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls=None,
         sample_id: str | None = None,
         dialogue: Any = None,
+        native_tool_call: dict | None = None,
+        request_cancellation: Any = None,
     ) -> Optional[ChatGenerationResult]:
+        if request_cancellation is not None:
+            request_cancellation.raise_if_cancelled()
         try:
             with perf_span(trace_id, "generation.structured_postprocess", stage="parse"):
                 parse_outcome = parse_structured_response_with_meta(
@@ -2221,10 +2234,31 @@ class ModelController(GenerationService, ModelStateService):
             )
 
         profile = (capabilities or {}).get("structured_response_profile")
+        tool_mode = ((capabilities or {}).get('tool_mode') or {}).get('effective', '')
+        try:
+            if native_tool_call is not None:
+                validate_runtime_native_call(
+                    native_tool_call, structured.tool_call, profile=profile, tools_on=tools_on,
+                    enabled_tools=enabled_tools, depth=tool_depth,
+                    max_depth=int(self.settings.get('TOOL_MAX_DEPTH', 2)), mode=tool_mode,
+                )
+            elif tool_mode == 'native' and structured.tool_call is not None:
+                raise ValueError('Schema tool calls are forbidden in native mode')
+        except ValueError:
+            return ChatGenerationResult(
+                text='', character_id=char_id, error='The model requested a tool forbidden by this request.',
+                error_details={'code': 'native_tool_call_invalid', 'stage': 'tools'},
+                structured_parse_level='rejected', control_plane_trusted=False,
+            )
         if isinstance(profile, StructuredResponseCapabilities):
             profile.at_tool_depth(tool_depth).sanitize_response(structured)
         else:
             self._sanitize_structured_segment_fields(structured, capabilities)
+        if native_tool_call is not None:
+            from schemas.structured_response import ToolCall as StructuredToolCall
+            structured.tool_call = StructuredToolCall(
+                name=native_tool_call["name"], args=native_tool_call["arguments"],
+            )
 
         # Apply and snapshot character state in a short critical section. Tool
         # execution and any follow-up provider request happen after this lock.
@@ -2289,6 +2323,8 @@ class ModelController(GenerationService, ModelStateService):
                 image_descriptions=image_descriptions,
                 voice_profile=voice_profile,
                 dialogue=dialogue,
+                native_tool_call=native_tool_call,
+                request_cancellation=request_cancellation,
             )
 
         # A tool-call response is only an intermediate turn. Commit its working
@@ -2472,6 +2508,8 @@ class ModelController(GenerationService, ModelStateService):
         image_descriptions: dict[str, str] | None = None,
         voice_profile=None,
         dialogue: Any = None,
+        native_tool_call: dict | None = None,
+        request_cancellation: Any = None,
     ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
@@ -2480,6 +2518,8 @@ class ModelController(GenerationService, ModelStateService):
         3. Append tool result as system message.
         4. Make a second LLM call for the final answer.
         """
+        if request_cancellation is not None:
+            request_cancellation.raise_if_cancelled()
         from utils.structured_response_parser import structured_response_to_result_dict
 
         tool_name = structured.tool_call.name
@@ -2506,7 +2546,13 @@ class ModelController(GenerationService, ModelStateService):
         )
 
         first_assistant_message_id = ""
-        if policy.write_to_history:
+        history_task_uid = task_uid
+        if native_tool_call is not None:
+            history_task_uid = f"{task_uid or req_id or char_id}:native:{native_tool_call['id']}"
+            first_assistant_message_id = ConversationMessageIds.assistant(history_task_uid)
+
+        def persist_tool_turn(history_data):
+            nonlocal first_assistant_message_id
             history_write = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
@@ -2520,8 +2566,8 @@ class ModelController(GenerationService, ModelStateService):
                 assistant_text=first_text,
                 assistant_target="Player",
                 event_type=event_type,
-                task_uid=task_uid,
-                structured_data=result_dict,
+                task_uid=history_task_uid,
+                structured_data=history_data,
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
                 sample_id=sample_id,
@@ -2529,6 +2575,9 @@ class ModelController(GenerationService, ModelStateService):
             )
             first_assistant_message_id = history_write.assistant_message_id
             self._publish_history_commit(history_write, character_id=char_id)
+
+        if policy.write_to_history and native_tool_call is None:
+            persist_tool_turn(result_dict)
 
         # Emit first response to UI (shows "I'll check that" message)
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
@@ -2551,6 +2600,8 @@ class ModelController(GenerationService, ModelStateService):
         })
 
         # Execute the tool
+        if request_cancellation is not None:
+            request_cancellation.raise_if_cancelled()
         logger.info(f"[ModelController] Executing tool '{tool_name}' with args: {tool_args}")
         self.model.tool_manager.set_char_context(char_id)
         try:
@@ -2558,6 +2609,11 @@ class ModelController(GenerationService, ModelStateService):
         except Exception as e:
             tool_result = f"[Tool error: {format_exception(e)}]"
             logger.error(f"[ModelController] Tool '{tool_name}' failed: {format_exception(e)}", exc_info=True)
+
+        if policy.write_to_history and native_tool_call is not None:
+            history_data = dict(result_dict)
+            history_data['native_tool_history'] = native_tool_followup_messages(native_tool_call, tool_result)
+            persist_tool_turn(history_data)
 
         self.event_bus.emit(Events.Model.ON_TOOL_DONE, {
             "tool_name": tool_name,
@@ -2594,11 +2650,14 @@ class ModelController(GenerationService, ModelStateService):
             first_response_json = structured.model_dump_json(exclude_none=True)
         except Exception:
             first_response_json = first_text
-        combined_messages_v2.append({"role": "assistant", "content": first_response_json})
-        if _result_mode in ("system", "both"):
-            combined_messages_v2.append({"role": "system", "content": _system_content})
-        if _result_mode in ("user", "both"):
-            combined_messages_v2.append({"role": "user", "content": _user_content})
+        if native_tool_call is not None:
+            combined_messages_v2.extend(native_tool_followup_messages(native_tool_call, tool_result))
+        else:
+            combined_messages_v2.append({"role": "assistant", "content": first_response_json})
+            if _result_mode in ("system", "both"):
+                combined_messages_v2.append({"role": "system", "content": _system_content})
+            if _result_mode in ("user", "both"):
+                combined_messages_v2.append({"role": "user", "content": _user_content})
 
         continuation_capabilities = dict(capabilities or {})
         continuation_profile = continuation_capabilities.get("structured_response_profile")
@@ -2623,6 +2682,8 @@ class ModelController(GenerationService, ModelStateService):
                 })
 
         # Second LLM call
+        if request_cancellation is not None:
+            request_cancellation.raise_if_cancelled()
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
             "character_id": char_id,
             "character_name": char_name or char_id or "Мита",
@@ -2633,7 +2694,7 @@ class ModelController(GenerationService, ModelStateService):
                 combined_messages_v2,
                 preset_id=preset_id,
                 capabilities_override=(continuation_capabilities or None),
-                request_options_override={"trace_id": trace_id} if trace_id else None,
+                request_options_override={"trace_id": trace_id, "cancellation": request_cancellation},
                 structured_model=structured_model_cls,
                 context_character_id=char_id,
                 context_character_name=char_name,
@@ -2661,6 +2722,9 @@ class ModelController(GenerationService, ModelStateService):
             )
 
         visible_raw_2, think_text_2 = self._split_response_thinking(llm_response_2)
+        continuation_capabilities['tool_mode'] = (llm_response_2.raw or {}).get(
+            'tool_mode', continuation_capabilities.get('tool_mode'),
+        )
         merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
 
         combined_think = think_text
@@ -2708,6 +2772,8 @@ class ModelController(GenerationService, ModelStateService):
             structured_model_cls=structured_model_cls,
             sample_id=sample_id_2,
             dialogue=dialogue,
+            native_tool_call=(llm_response_2.raw or {}).get("native_tool_call"),
+            request_cancellation=request_cancellation,
         )
 
     # ---------------------------------------------------------------------

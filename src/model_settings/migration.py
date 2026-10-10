@@ -139,10 +139,4 @@ def migrate_generation_settings(service, preset, dialect, settings=None):
             state["schema_override"] = custom
             state["values"]["thinking"] = value
             state["enabled"].append("thinking")
-        elif dialect == "g4f":
-            custom = deepcopy(schema.data)
-            custom["fields"].append({"id": "enable_thinking", "type": "boolean", "path": ["enable_thinking"], "default": enabled_thinking, "title": {"ru": "Режим мышления", "en": "Thinking mode"}})
-            state["schema_override"] = custom
-            state["values"]["enable_thinking"] = enabled_thinking
-            state["enabled"].append("enable_thinking")
     return state

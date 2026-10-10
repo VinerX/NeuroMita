@@ -341,73 +341,10 @@ def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _read_settings() -> dict[str, Any]:
-    try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _desired_g4f_version(settings: dict[str, Any] | None = None) -> str | None:
-    data = dict(settings or _read_settings())
-    raw = data.get("G4F_TARGET_VERSION") if data.get("G4F_UPDATE_PENDING") else None
-    if not raw:
-        raw = data.get("G4F_VERSION")
-    value = str(raw or "").strip()
-    if not value:
-        return None
-    if value.lower() == "latest":
-        return "latest"
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!_-]*", value):
-        log(f"Игнорирую некорректную версию g4f в настройках: {value!r}")
-        return None
-    return value
-
-
-def _effective_requirements_text() -> tuple[str, str | None]:
-    text = REQ_FILE.read_text(encoding="utf-8")
-    desired = _desired_g4f_version()
-    if not desired:
-        return text, None
-
-    output: list[str] = []
-    replaced = False
-    pattern = re.compile(
-        r"^(?P<indent>\s*)(?P<name>g4f)(?P<extras>\[[^\]]+\])?"
-        r"(?P<tail>\s*(?:[<>=!~@].*)?)$",
-        re.IGNORECASE,
-    )
-    for raw_line in text.splitlines(keepends=True):
-        newline = "\n" if raw_line.endswith("\n") else ""
-        line = raw_line[:-1] if newline else raw_line
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", "-")):
-            output.append(raw_line)
-            continue
-        requirement, sep, comment = line.partition(" #")
-        match = pattern.match(requirement)
-        if match is None:
-            output.append(raw_line)
-            continue
-        spec = f"{match.group('indent')}{match.group('name')}{match.group('extras') or ''}"
-        if desired != "latest":
-            spec += f"=={desired}"
-        if sep:
-            spec += sep + comment
-        output.append(spec + newline)
-        replaced = True
-
-    if not replaced:
-        if output and not output[-1].endswith("\n"):
-            output[-1] += "\n"
-        output.append("g4f" + ("" if desired == "latest" else f"=={desired}") + "\n")
-    return "".join(output), desired
 
 
 def _effective_requirements_hash() -> str:
-    text, _desired = _effective_requirements_text()
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return file_hash(REQ_FILE)
 
 
 def _split_audited_no_deps_requirements(text: str) -> tuple[str, tuple[str, ...]]:
@@ -440,27 +377,14 @@ def _split_audited_no_deps_requirements(text: str) -> tuple[str, tuple[str, ...]
     return "".join(output), tuple(found)
 
 
-def _write_effective_requirements() -> tuple[Path, str | None, tuple[str, ...]]:
-    text, desired = _effective_requirements_text()
+def _write_effective_requirements() -> tuple[Path, tuple[str, ...]]:
+    text = REQ_FILE.read_text(encoding="utf-8")
     text, no_deps_requirements = _split_audited_no_deps_requirements(text)
     BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
     temp = EFFECTIVE_REQ_FILE.with_name(f".{EFFECTIVE_REQ_FILE.name}.{os.getpid()}.tmp")
     temp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(temp, EFFECTIVE_REQ_FILE)
-    return EFFECTIVE_REQ_FILE, desired, no_deps_requirements
-
-
-def _mark_pending_g4f_update_applied() -> None:
-    settings = _read_settings()
-    if not settings.get("G4F_UPDATE_PENDING"):
-        return
-    target = _desired_g4f_version(settings)
-    if target:
-        settings["G4F_VERSION"] = target
-    settings["G4F_UPDATE_PENDING"] = False
-    settings["G4F_TARGET_VERSION"] = None
-    _write_json_atomic(SETTINGS_FILE, settings)
-    log(f"Запланированное обновление g4f применено: {target or 'requirements.txt'}")
+    return EFFECTIVE_REQ_FILE, no_deps_requirements
 
 
 def _python_identity() -> dict[str, Any]:
@@ -728,9 +652,7 @@ def install_requirements(target: Path | None = None) -> bool:
     log(f"Core зависимости: {install_target}")
     log(f"Приватный uv: {UV_TARGET}")
 
-    effective_requirements, desired_g4f, no_deps_requirements = _write_effective_requirements()
-    if desired_g4f:
-        log(f"Версия g4f для core: {desired_g4f}")
+    effective_requirements, no_deps_requirements = _write_effective_requirements()
 
     if ensure_uv():
         code = run([
@@ -912,7 +834,6 @@ def main() -> None:
         raise SystemExit(1)
     if core_was_healthy:
         log("Core-зависимости проверены — установка не требуется.")
-    _mark_pending_g4f_update_applied()
 
     env = _base_env()
     env["PYTHONPATH"] = str(CORE_DIR)
@@ -935,7 +856,6 @@ def main() -> None:
             if not ensure_core_ready():
                 log("Core-зависимости после обновления восстановить не удалось.")
                 raise SystemExit(1)
-            _mark_pending_g4f_update_applied()
             continue
         raise SystemExit(code)
 
