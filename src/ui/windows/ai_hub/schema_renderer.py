@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from core.setting_behaviors import evaluate_setting_behaviors
 from utils import getTranslationVariant as _tr
+from localization.schema import bind_option_labels
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -245,6 +246,8 @@ class SchemaForm(QWidget):
         widget = self._build_widget(type_, opts, locked, key)
         if widget is None:
             return
+        if isinstance(widget, QComboBox):
+            bind_option_labels(widget, entry)
         self._widgets[key] = widget
 
         label_text = self._resolve_label(entry, key)

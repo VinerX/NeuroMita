@@ -1,11 +1,8 @@
 // response_format_json.script
 // Common structured-output format instruction included by per-character response_structure.txt files.
 //
-// Runtime variables set by prompt_controller.py before template runs:
-//   SCHEMA_REASONING_ENABLED (bool) — include reasoning field in schema
-//   GRAPH_EXTRACTION_ENABLED (bool) — include entities/relations fields
-//   TOOLS_DESCRIPTION         (str)  — injected via [{TOOLS_DESCRIPTION}] in returned text
-//   CUSTOM_PARAMS_SCHEMA      (str)  — injected via [{CUSTOM_PARAMS_SCHEMA}] in returned text
+// Request-local response field availability is passed as DSL feature overrides.
+// CUSTOM_PARAMS_SCHEMA remains the dynamic custom-field shape.
 // Prompt metadata declared by the selected top-level template:
 //   support_intents           (bool) — expose Unity structured intents
 //
@@ -13,6 +10,10 @@
 //   [<../../Structural/response_format_json.script>]
 // and then append character-specific emotions, animations, commands etc.
 // You may override or extend any section, but keep in sync with updates to this file.
+
+IF response_sparse_format == True THEN
+    RETURN ""
+ENDIF
 
 SET LOCAL p_header = """Response Format (Structured JSON):
 
@@ -43,7 +44,7 @@ Schema:
 """
 ENDIF
 
-IF ENABLE_GAMES == True THEN
+IF response_segment_start_game == True AND response_segment_end_game == True THEN
     SET LOCAL p_schema_game_fields = """
       "start_game": "game_id",
       "end_game": "game_id","""
@@ -52,6 +53,7 @@ ELSE
 ENDIF
 
 IF support_intents == True THEN
+IF response_has_intents != False THEN
     SET LOCAL p_intents_schema_field = """
       "intents": [{"type": "intent.type", "payload": {}}],"""
     SET LOCAL p_intents_rules = """
@@ -68,24 +70,85 @@ ELSE
     SET LOCAL p_intents_rules = ""
     SET LOCAL p_intents_example = ""
 ENDIF
+ENDIF
+
+SET LOCAL p_segment_fields = ""
+IF response_segment_emotions == True THEN
+    SET p_segment_fields = p_segment_fields + '      "emotions": ["emotion_id"],\n'
+ENDIF
+IF response_segment_animations == True THEN
+    SET p_segment_fields = p_segment_fields + '      "animations": ["animation_name"],\n'
+ENDIF
+IF response_segment_idle_animations == True THEN
+    SET p_segment_fields = p_segment_fields + '      "idle_animations": ["animation_name"],\n'
+ENDIF
+IF response_segment_movement_modes == True THEN
+    SET p_segment_fields = p_segment_fields + '      "movement_modes": ["mode"],\n'
+ENDIF
+IF response_segment_visual_effects == True THEN
+    SET p_segment_fields = p_segment_fields + '      "visual_effects": ["effect,duration"],\n'
+ENDIF
+IF response_segment_clothes == True THEN
+    SET p_segment_fields = p_segment_fields + '      "clothes": ["outfit_id"],\n'
+ENDIF
+IF response_segment_interactions == True THEN
+    SET p_segment_fields = p_segment_fields + '      "interactions": ["interaction_target"],\n'
+ENDIF
+IF response_segment_face_params == True THEN
+    SET p_segment_fields = p_segment_fields + '      "face_params": ["param"],\n'
+ENDIF
+IF response_segment_allow_sleep == True THEN
+    SET p_segment_fields = p_segment_fields + '      "allow_sleep": true/false,\n'
+ENDIF
+IF response_segment_music == True THEN
+    SET p_segment_fields = p_segment_fields + '      "music": ["music_name"],\n'
+ENDIF
+IF response_segment_target == True THEN
+    SET p_segment_fields = p_segment_fields + '      "target": "exact active character identifier",\n'
+ENDIF
+IF response_segment_hint == True THEN
+    SET p_segment_fields = p_segment_fields + '      "hint": "hint text"\n'
+ENDIF
+
+SET LOCAL p_optional_fields = ""
+IF response_has_image_description == True THEN
+    SET p_optional_fields = p_optional_fields + '  "image_description": "description of the visible image",\n'
+ENDIF
+IF response_has_secret == True THEN
+    SET p_optional_fields = p_optional_fields + '  "secret_exposed": true/false/null,\n'
+ENDIF
+IF response_has_reminders == True THEN
+    SET p_optional_fields = p_optional_fields + '  "reminder_add": ["YYYY-MM-DDTHH:MM:SS|text", ...],\n  "reminder_delete": ["id", ...],\n'
+ENDIF
+IF response_has_timers == True THEN
+    SET p_optional_fields = p_optional_fields + '  "timer_add": ["delay_seconds|instruction", ...],\n'
+ENDIF
+IF response_has_tools == True THEN
+    SET p_optional_fields = p_optional_fields + '  "tool_call": {"name": "tool_name", "args": {"param": "value"}},\n'
+ENDIF
+
+SET LOCAL p_wire_rules = ""
+IF response_has_secret == True THEN
+    SET p_wire_rules = p_wire_rules + '\n- secret_exposed is required by the active schema for this character; use true, false, or null when no reveal decision is needed.\n'
+ENDIF
+IF response_has_image_description == True THEN
+    SET p_wire_rules = p_wire_rules + '\n- image_description is for the images present in the available conversation context; do not invent visual details.\n'
+ENDIF
+IF response_has_reminders == True THEN
+    SET p_wire_rules = p_wire_rules + '\n- reminder_add/reminder_delete are top-level reminder operations.\n'
+ENDIF
+IF response_has_timers == True THEN
+    SET p_wire_rules = p_wire_rules + '\n- timer_add schedules a short timer and is separate from persisted reminders.\n'
+ENDIF
+IF response_has_tools == True THEN
+    SET p_wire_rules = p_wire_rules + '\n- tool_call may name only a tool listed in [Available Tools].\n'
+ENDIF
 
 SET LOCAL p_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
-      "emotions": ["emotion_id"],
-      "animations": ["animation_name"],
-      "idle_animations": ["animation_name"],
       "commands": ["command_text"],
-      "movement_modes": ["mode"],
-      "visual_effects": ["effect,duration"],
-      "clothes": ["outfit_id"],
-      "music": ["music_name"],
-      "interactions": ["interaction_target"],
-""" + p_intents_schema_field + """
-      "face_params": ["param"],""" + p_schema_game_fields + """
-      "target": "exact active character identifier",
-      "hint": "hint text",
-      "allow_sleep": true/false
+""" + p_intents_schema_field + p_schema_game_fields + p_segment_fields + """
     }
   ],
   "attitude_change": <number, usually -2..2; 0 is normal>,
@@ -95,28 +158,13 @@ SET LOCAL p_schema_fields = """  "segments": [
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
   "memory_merge": ["id1,id2,...:merged text", ...],
-  "reminder_add": ["YYYY-MM-DDTHH:MM:SS|text", ...],
-  "reminder_delete": ["id", ...],
-  "tool_call": {"name": "tool_name", "args": {"param": "value"}},
-[{CUSTOM_PARAMS_SCHEMA}]}"""
+""" + p_optional_fields + "[{CUSTOM_PARAMS_SCHEMA}]}"
 
 SET LOCAL p_graph_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
-      "emotions": ["emotion_id"],
-      "animations": ["animation_name"],
-      "idle_animations": ["animation_name"],
       "commands": ["command_text"],
-      "movement_modes": ["mode"],
-      "visual_effects": ["effect,duration"],
-      "clothes": ["outfit_id"],
-      "music": ["music_name"],
-      "interactions": ["interaction_target"],
-""" + p_intents_schema_field + """
-      "face_params": ["param"],""" + p_schema_game_fields + """
-      "target": "exact active character identifier",
-      "hint": "hint text",
-      "allow_sleep": true/false
+""" + p_intents_schema_field + p_schema_game_fields + p_segment_fields + """
     }
   ],
   "attitude_change": <number, usually -2..2; 0 is normal>,
@@ -126,9 +174,7 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
   "memory_merge": ["id1,id2,...:merged text", ...],
-  "reminder_add": ["YYYY-MM-DDTHH:MM:SS|text", ...],
-  "reminder_delete": ["id", ...],
-  "tool_call": {"name": "tool_name", "args": {"param": "value"}},
+""" + p_optional_fields + """
   "entities": ["name:type", ...],
   "relations": ["subject|predicate|object", ...],
 [{CUSTOM_PARAMS_SCHEMA}]}"""
@@ -137,17 +183,17 @@ SET LOCAL p_rules = """
 
 Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
-- "animations": play animation once, "idle_animations": set as idle/loop.
+- Use only action fields shown in the current request schema. "animations" play once and "idle_animations" loop when those fields are available.
 - Use dedicated fields and typed intents listed in [Unity Intent Contract] for supported actions. Use "commands" only for commands explicitly exposed by the current runtime (for example camera_snapshot or commands described in [Unity Runtime Rules]). Never invent command names.
-""" + p_intents_rules + """
+""" + p_intents_rules + p_wire_rules + """
 
 Rules:
-- "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
+- "text" is REQUIRED in every segment. Emit only fields available in this request. If the active provider schema requires a field, return its empty/default value when no operation is needed; otherwise omit it.
 - "target" is an optional addressee of this segment's spoken text. Use the exact active character identifier from [Multi-Character Environment]. Omit it when speaking to the Player.
 - To address multiple interlocutors, write separate segments and set the matching "target" on each addressed segment.
 - Never emit top-level "target", "targets" or "next_turns" fields. Python transports segment meaning; the Unity-side client owns automatic turn routing.
 - attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
-- memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
+- memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Use empty arrays when required by the active schema; otherwise omit fields with no operations.
 - Create a memory only when it is likely to matter later: stable player preferences, promises, conflicts, trust, relationship shifts, or important story events. Do NOT memorize greetings, small talk, the current room, distance, held item, lighting, temporary animations or other short-lived world data. Prefer updating an existing memory over adding a near-duplicate.
 - Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts, language. Use islands for the big picture; use ordinary memories for specific facts.
 - `language` stores the Player's primary conversation language. If absent, infer it from the first clear natural-language Player message and create the language island. Keep it stable; change it only on an explicit request to switch. A second language, isolated words, quotes, code, names, slang, emojis, wrong keyboard layout, or system/game events do not change it. Reply in the stored language.
@@ -155,12 +201,12 @@ Rules:
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
 - memory_merge format: "id1,id2,...:merged text" — merges into first ID (rest deleted); content optional (auto-combined if omitted)
-- reminder_add/reminder_delete: TOP-LEVEL fields ONLY. Omit entirely if no reminder operations needed (do NOT output empty arrays).
+- reminder_add/reminder_delete: TOP-LEVEL fields ONLY. Use empty arrays when required by the active schema; otherwise omit fields with no operations.
 - reminder_add format: "YYYY-MM-DDTHH:MM:SS|text", e.g. "2026-04-05T18:00:00|Remind player about dinner"
 - reminder_delete format: reminder ID number as string, e.g. "3"
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
 - custom_fields: Fill ALL declared custom fields every message. Never leave custom_fields empty if it appears in the schema.
-- Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
+- Available segment action fields trigger when that segment's text is displayed.
 - Length applies to the TOTAL spoken text across ALL segments, never to a single segment. JSON, commands, emotions, animations and other technical fields do NOT count toward it.
 - Ordinary reply: usually 1-3 segments, about [{REPLY_TARGET_MIN_WORDS}]-[{REPLY_TARGET_MAX_WORDS}] words total.
 - Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
@@ -173,17 +219,17 @@ SET LOCAL p_graph_rules = """
 
 Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
-- "animations": play animation once, "idle_animations": set as idle/loop.
+- Use only action fields shown in the current request schema.
 - Use dedicated fields and typed intents listed in [Unity Intent Contract] for supported actions. Use "commands" only for commands explicitly exposed by the current runtime (for example camera_snapshot or commands described in [Unity Runtime Rules]). Never invent command names.
-""" + p_intents_rules + """
+""" + p_intents_rules + p_wire_rules + """
 
 Rules:
-- "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
+- "text" is REQUIRED in every segment. Emit only fields available in this request. If the active provider schema requires a field, return its empty/default value when no operation is needed; otherwise omit it.
 - "target" is an optional addressee of this segment's spoken text. Use the exact active character identifier from [Multi-Character Environment]. Omit it when speaking to the Player.
 - To address multiple interlocutors, write separate segments and set the matching "target" on each addressed segment.
 - Never emit top-level "target", "targets" or "next_turns" fields. Python transports segment meaning; the Unity-side client owns automatic turn routing.
 - attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
-- memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
+- memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Use empty arrays when required by the active schema; otherwise omit fields with no operations.
 - Create a memory only when it is likely to matter later: stable player preferences, promises, conflicts, trust, relationship shifts, or important story events. Do NOT memorize greetings, small talk, the current room, distance, held item, lighting, temporary animations or other short-lived world data. Prefer updating an existing memory over adding a near-duplicate.
 - Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts, language. Use islands for the big picture; use ordinary memories for specific facts.
 - `language` stores the Player's primary conversation language. If absent, infer it from the first clear natural-language Player message and create the language island. Keep it stable; change it only on an explicit request to switch. A second language, isolated words, quotes, code, names, slang, emojis, wrong keyboard layout, or system/game events do not change it. Reply in the stored language.
@@ -191,7 +237,7 @@ Rules:
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
 - memory_merge format: "id1,id2,...:merged text" — merges into first ID (rest deleted); content optional (auto-combined if omitted)
-- reminder_add/reminder_delete: TOP-LEVEL fields ONLY. Omit entirely if no reminder operations needed (do NOT output empty arrays).
+- reminder_add/reminder_delete: TOP-LEVEL fields ONLY. Use empty arrays when required by the active schema; otherwise omit fields with no operations.
 - reminder_add format: "YYYY-MM-DDTHH:MM:SS|text"
 - reminder_delete format: reminder ID number as string
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
@@ -215,12 +261,10 @@ Example response:
     {
       "text": "Oh, you like cats too?",
 """ + p_intents_example + """
-      "emotions": ["smile"]
+      "commands": []
     },
     {
-      "text": "I always wanted a kitten!",
-      "emotions": ["happy"],
-      "animations": ["Wave hand"]
+      "text": "I always wanted a kitten!"
     }
   ],
   "attitude_change": 1.5,
@@ -237,12 +281,10 @@ Example response:
     {
       "text": "Oh, you like cats too?",
 """ + p_intents_example + """
-      "emotions": ["smile"]
+      "commands": []
     },
     {
-      "text": "I always wanted a kitten!",
-      "emotions": ["happy"],
-      "animations": ["Wave hand"]
+      "text": "I always wanted a kitten!"
     }
   ],
   "attitude_change": 1.5,
@@ -253,7 +295,8 @@ Example response:
   "relations": ["player|likes|cats"]
 }"""
 
-SET LOCAL p_footer = """
+IF response_has_tools == True THEN
+    SET LOCAL p_tool_footer = """
 
 tool_call: Use this TOP-LEVEL field when you need to call an external tool (internet search, calculator, etc.).
 - NEVER put tool names in the "commands" array. commands is ONLY for character game actions.
@@ -263,13 +306,19 @@ tool_call: Use this TOP-LEVEL field when you need to call an external tool (inte
 - You will receive the tool result in the next message and can then answer fully.
 - You can chain tools: e.g. first call web_search to get URLs, then call web_reader on the best result URL.
 - Omit "tool_call" entirely if no tool is needed.
+"""
+ELSE
+    SET LOCAL p_tool_footer = ""
+ENDIF
+
+SET LOCAL p_footer = p_tool_footer + """
 
 When a physical event reaches you (for example in [Unity Runtime Events]), react to it first with your body or gaze — an emotion, a look, a small animation — and only then with words. Do not narrate the event; respond to it.
 
 Tag [SYSTEM INFO] means system information, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue."""
 
-IF GRAPH_EXTRACTION_ENABLED == True AND RAG_ENABLED == True THEN
+IF response_has_graph == True THEN
     SET LOCAL result = p_header + p_toc + p_schema_open + p_graph_schema_fields + p_graph_rules + p_graph_example + p_footer
 ELSE
     SET LOCAL result = p_header + p_toc + p_schema_open + p_schema_fields + p_rules + p_example + p_footer

@@ -29,6 +29,7 @@ from model_settings.service import ModelSettingsService
 from model_settings.schema import SchemaError
 from presets.provider_host_metadata import infer_provider_currency
 from handlers.llm_providers.http_transport import LLMHttpClient
+from services.provider_settings import describe_protocol, run_account_action
 
 
 @dataclass
@@ -58,6 +59,7 @@ class ApiTemplate:
     test_path: str = ""
     url_tpl: str = ""
     default_model: str = ""
+    preferred_model: str = ""
     known_models: List[str] = field(default_factory=list)
     model_profiles: List[Dict[str, Any]] = field(default_factory=list)
     settings_schema_id: str = ""
@@ -79,6 +81,7 @@ class UserPreset:
     pricing: str = "mixed"
     badge_kind: str = ""
     default_model: str = ""
+    preferred_model: Optional[str] = None
     url: str = ""
     test_url: str = ""
     key: str = ""
@@ -560,6 +563,7 @@ class ApiPresetsController(ApiPresetService):
             pricing=str(raw.get("pricing", "mixed") or "mixed"),
             badge_kind=str(raw.get("badge_kind", "") or "").strip(),
             default_model=str(raw.get("default_model", "") or ""),
+            preferred_model=str(raw['preferred_model'] or '').strip() if raw.get('preferred_model') is not None else None,
             url=url,
             test_url=str(raw.get("test_url") or "").strip(),
             key=str(raw.get("key", "") or ""),
@@ -843,6 +847,7 @@ class ApiPresetsController(ApiPresetService):
             "test_path": tpl.test_path if tpl else "",
             "url_tpl": tpl.url_tpl if tpl else "",
             "default_model": p.default_model or (tpl.default_model if tpl else ""),
+            "preferred_model": p.preferred_model if p.preferred_model is not None else (tpl.preferred_model if tpl else ""),
             "known_models": self._known_models_for_template(tpl),
             "test_url": resolve_test_url(asdict(tpl) if tpl else {}, p.url, p.test_url),
             "filter_fn": tpl.filter_fn if tpl else "",
@@ -1026,6 +1031,8 @@ class ApiPresetsController(ApiPresetService):
         up.pricing = str(data.get("pricing", up.pricing) or up.pricing)
         up.badge_kind = str(data.get("badge_kind", up.badge_kind) or up.badge_kind).strip()
         up.default_model = str(data.get("default_model", up.default_model) or up.default_model)
+        if 'preferred_model' in data:
+            up.preferred_model = str(data['preferred_model'] or '').strip() if data['preferred_model'] is not None else None
         up.url = (
             str(data.get("url", up.url) or "").strip()
             if not template or template.url_editable
@@ -1237,6 +1244,15 @@ class ApiPresetsController(ApiPresetService):
 
         payload = event.data or {}
         saved = self.presets.get(preset_id)
+        protocol_id = str(payload.get('protocol_id') or (saved.protocol_id if saved else '')
+                          or (p_tpl.protocol_id if p_tpl else '') or 'openai_compatible_default')
+        descriptor = describe_protocol(protocol_id)
+        if descriptor.account_actions:
+            task_supervisor().start_thread(
+                self, 'api-preset-account-action', self._sync_account_action,
+                args=(preset_id or 0, protocol_id, str(payload.get('action') or descriptor.connection_action),
+                      str(payload.get('account_id') or '')), replace=True)
+            return
         api_url = str(payload.get("url", saved.url if saved else "") or "")
         custom_test_url = str(
             payload.get("test_url", saved.test_url if saved else "") or ""
@@ -1295,6 +1311,14 @@ class ApiPresetsController(ApiPresetService):
             args=(preset_id or 0, p_tpl, key),
             replace=True,
         )
+
+    def _sync_account_action(self, preset_id: int, protocol_id: str, action: str, account_id: str) -> None:
+        try:
+            result = run_account_action(protocol_id, action, account_id)
+            self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {'id': preset_id or None, **result})
+        except Exception as exc:
+            self.event_bus.emit(Events.ApiPresets.TEST_FAILED, {
+                'id': preset_id or None, 'message': str(exc)})
 
     @staticmethod
     def _normalize_test_model_id(raw_model_id: Any) -> str:

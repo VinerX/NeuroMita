@@ -26,6 +26,8 @@ from utils.openrouter_routing import (
     normalize_openrouter_routing,
 )
 from .streaming import StreamAccumulator
+from services.structured_response_capabilities import provider_schema_options
+from schemas.sparse_structured_response import provider_structured_model
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
@@ -127,17 +129,12 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     params["response_format"] = {"type": "json_object"}
                 else:
                     model_cls = req.structured_model or StructuredResponse
-                    has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
-                    excl = set() if has_custom else {"custom_fields"}
-                    if not caps.get("schema_reasoning", True):
-                        excl.add("reasoning")
-                    excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
-                    segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
-                    if not caps.get("schema_intents", True):
-                        segment_excl.add("intents")
+                    model_cls = provider_structured_model(model_cls, caps)
+                    schema_options = provider_schema_options(caps)
                     params["response_format"] = model_cls.openai_response_format(
-                        exclude_fields=excl or None,
-                        exclude_segment_fields=segment_excl or None,
+                        exclude_fields=schema_options["exclude_fields"] or None,
+                        exclude_segment_fields=schema_options["exclude_segment_fields"] or None,
+                        require_fields=schema_options["require_fields"] or None,
                     )
                 logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 

@@ -114,7 +114,7 @@ class SettingsSchema:
                 raise SchemaError(f"Invalid localized schema text: {label}")
             if isinstance(data.get(label), dict) and not all(isinstance(key, str) and isinstance(value, str) for key, value in data[label].items()):
                 raise SchemaError("Localized schema text must contain language codes and strings")
-        if data.get("dialect") not in {"openai_chat_completions", "gemini_generate_content", "g4f"}:
+        if data.get("dialect") not in {"openai_chat_completions", "openai_responses", "gemini_generate_content", "g4f"}:
             raise SchemaError("Unsupported settings dialect")
         supports = data.get("supports", {})
         if not isinstance(supports, dict) or set(supports) - {"structured_output", "tools_native", "streaming"} or not all(type(value) is bool for value in supports.values()):

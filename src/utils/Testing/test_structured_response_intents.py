@@ -45,6 +45,33 @@ def _gemini_segment_props(schema: dict) -> dict:
 
 
 class IntentsPassthroughTests(unittest.TestCase):
+    def test_inventory_string_payload_reaches_unity_as_object(self) -> None:
+        for intent_type in ("inventory.take", "inventory.collect", "inventory.drop",
+                            "inventory.return", "inventory.equip_right", "inventory.equip_left"):
+            for value in ("Cat", '"Cat"', '{"object":"Cat"}'):
+                with self.subTest(intent_type=intent_type, value=value):
+                    response = parse_structured_response(json.dumps({"segments": [{
+                        "text": "hi", "intents": [{"type": intent_type, "payload": value}]
+                    }]}))
+                    result = structured_response_to_result_dict(response)
+                    self.assertEqual(result["segments"][0]["intents"],
+                                     [{"type": intent_type, "payload": {"object": "Cat"}}])
+
+    def test_inventory_invalid_payload_does_not_become_item_name(self) -> None:
+        for value in ("", "  ", "[]", "null", "123", '{"object":'):
+            with self.subTest(value=value):
+                response = parse_structured_response(json.dumps({"segments": [{
+                    "text": "hi", "intents": [{"type": "inventory.take", "payload": value}]
+                }]}))
+                self.assertEqual(response.segments[0].intents[0].payload, {})
+
+    def test_lamp_commands_survive_top_level_compatibility(self) -> None:
+        response = parse_structured_response(json.dumps({
+            "segments": [{"text": "hi"}], "commands": ["light:lamps:on"]
+        }))
+        self.assertEqual(structured_response_to_result_dict(response)["segments"][0]["commands"],
+                         ["light:lamps:on"])
+
     def test_intents_not_lost_by_parser(self) -> None:
         payload = {
             "segments": [

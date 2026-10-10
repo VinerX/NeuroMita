@@ -43,17 +43,15 @@ def test_whisper_full_catalogue_and_google_existing_choices():
     assert 'Ukrainian' in cat.asr_language_names('whisper')
     assert 'Cantonese' in cat.asr_language_names('whisper')
     assert cat.asr_language_field('whisper_onnx')['options'] == options
-    assert options[:11] == ['ru', 'uk', 'en', 'de', 'fr', 'es', 'it', 'pt', 'ja', 'zh', 'ko']
+    assert options[:12] == ['auto', 'ru', 'uk', 'en', 'de', 'fr', 'es', 'it', 'pt', 'ja', 'zh', 'ko']
     for engine in ('whisper', 'whisper_onnx'):
         whisper_labels = cat.asr_language_field(engine)['option_labels']
-        assert all(whisper_labels[code].startswith('★ ') == (index < 11)
-                   for index, code in enumerate(options))
+        assert all(not label.startswith('★ ') for label in whisper_labels.values())
     google_options = cat.asr_language_field('google')['options']
     assert {'ru-RU', 'uk-UA', 'en-US', 'en-GB', 'de-DE', 'fr-FR', 'es-ES', 'ja-JP', 'zh-CN'} <= set(google_options)
     assert google_options[:11] == ['ru-RU', 'uk-UA', 'en-US', 'de-DE', 'fr-FR', 'es-ES', 'it-IT', 'pt-BR', 'ja-JP', 'zh-CN', 'ko-KR']
     labels = cat.asr_language_field('google')['option_labels']
-    assert all(labels[code].startswith('★ ') == (index < 11)
-               for index, code in enumerate(google_options))
+    assert all(not label.startswith('★ ') for label in labels.values())
     assert {'it-IT', 'pt-BR', 'pl-PL', 'ko-KR', 'hi-IN', 'yue-Hant-HK'} <= set(google_options)
     assert len(google_options) == len(set(google_options))
     assert 'auto' not in google_options

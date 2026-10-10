@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 
 from localization.live import tr_set, register
-from localization import translate as _
+from localization import translate as _, translation_source
 from styles.theme import get_theme
 from handlers.asr_input_gate import normalize_input_mode
 from ui.settings.microphone_settings.widgets import (
@@ -284,40 +284,32 @@ def build_microphone_settings_ui(self, parent_layout):
             "mic_instant_checkbox",
             "MIC_INSTANT_SENT",
             False,
-            "Мгновенная отправка",
-            "Instant send",
-            "Отправлять распознанный текст сразу.",
-            "Send recognized text immediately.",
+            *translation_source('Мгновенная отправка', 'Instant send'),
+            *translation_source('Отправлять распознанный текст сразу.', 'Send recognized text immediately.'),
             "fa5s.bolt",
         ),
         (
             "mic_instant_delay_checkbox",
             "MIC_INSTANT_SEND_DELAY_ENABLED",
             False,
-            "Отправлять с паузой",
-            "Send after pause",
-            "Новая речь или печать перезапускает отсчёт.",
-            "New speech or typing restarts the countdown.",
+            *translation_source('Отправлять с паузой', 'Send after pause'),
+            *translation_source('Новая речь или печать перезапускает отсчёт.', 'New speech or typing restarts the countdown.'),
             "fa5s.clock",
         ),
         (
             "mic_instant_merge_input_checkbox",
             "MIC_INSTANT_MERGE_CHAT_INPUT",
             True,
-            "Добавлять текст из чата",
-            "Include chat text",
-            "Объединять речь с текстом в поле ввода.",
-            "Combine speech with the typed chat input.",
+            *translation_source('Добавлять текст из чата', 'Include chat text'),
+            *translation_source('Объединять речь с текстом в поле ввода.', 'Combine speech with the typed chat input.'),
             "fa5s.comment-dots",
         ),
         (
             "mic_mute_while_speaking_checkbox",
             "MIC_MUTE_WHILE_SPEAKING",
             False,
-            "Приостанавливать распознавание, пока Мита говорит",
-            "Pause recognition while Mita speaks",
-            "Не распознавать речь во время ответа Миты.",
-            "Ignore speech while Mita is replying.",
+            *translation_source('Приостанавливать распознавание, пока Мита говорит', 'Pause recognition while Mita speaks'),
+            *translation_source('Не распознавать речь во время ответа Миты.', 'Ignore speech while Mita is replying.'),
             "fa5s.pause",
         ),
     ]
@@ -354,7 +346,7 @@ def build_microphone_settings_ui(self, parent_layout):
         _("Рация — включать кнопкой", "Radio — start with a button"), "radio"
     )
     self.asr_input_mode_combobox.addItem(_("Слушать постоянно", "Always listen"), "vad")
-    self.asr_input_mode_combobox.addItem("Push-to-talk", "ptt")
+    self.asr_input_mode_combobox.addItem(_("Нажать для разговора", "Push-to-talk"), "ptt")
     self.asr_input_mode_combobox.setCurrentIndex(
         self.asr_input_mode_combobox.findData(
             normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio"))
@@ -367,6 +359,7 @@ def build_microphone_settings_ui(self, parent_layout):
                 0, _("Рация — включать кнопкой", "Radio — start with a button")
             ),
             w.setItemText(1, _("Слушать постоянно", "Always listen")),
+            w.setItemText(2, _("Нажать для разговора", "Push-to-talk")),
         ),
     )
     behavior_layout.addWidget(
@@ -393,10 +386,8 @@ def build_microphone_settings_ui(self, parent_layout):
             16000,
             1000,
             0,
-            "Sample rate",
-            "Sample rate",
-            "Фиксированная частота: 16000 Гц.",
-            "Fixed sample rate: 16000 Hz.",
+            *translation_source('Частота дискретизации', 'Sample rate'),
+            *translation_source('Фиксированная частота: 16000 Гц.', 'Fixed sample rate: 16000 Hz.'),
             "fa5s.wave-square",
         ),
         (
@@ -407,10 +398,8 @@ def build_microphone_settings_ui(self, parent_layout):
             512,
             128,
             0,
-            "Chunk size",
-            "Chunk size",
-            "Размер аудиоблока в сэмплах.",
-            "Audio block size in samples.",
+            *translation_source('Размер чанка', 'Chunk size'),
+            *translation_source('Размер аудиоблока в сэмплах.', 'Audio block size in samples.'),
             "fa5s.database",
         ),
         (
@@ -421,10 +410,8 @@ def build_microphone_settings_ui(self, parent_layout):
             0.5,
             0.05,
             2,
-            "VAD threshold",
-            "VAD threshold",
-            "Порог голосовой активности.",
-            "Voice activity threshold.",
+            *translation_source('Порог голосовой активности', 'VAD threshold'),
+            *translation_source('Порог голосовой активности.', 'Voice activity threshold.'),
             "fa5s.wave-square",
         ),
         (
@@ -435,10 +422,8 @@ def build_microphone_settings_ui(self, parent_layout):
             0.6,
             0.05,
             2,
-            "Тишина (сек)",
-            "Silence (sec)",
-            "Пауза для окончания фразы. Менее 0,4 с может обрезать речь.",
-            "Pause ending a phrase. Below 0.4 s may cut speech short.",
+            *translation_source('Тишина (сек)', 'Silence (sec)'),
+            *translation_source('Пауза для окончания фразы. Менее 0,4 с может обрезать речь.', 'Pause ending a phrase. Below 0.4 s may cut speech short.'),
             "fa5s.clock",
         ),
         (
@@ -449,10 +434,8 @@ def build_microphone_settings_ui(self, parent_layout):
             0.4,
             0.05,
             2,
-            "Pre-buffer (сек)",
-            "Pre-buffer (sec)",
-            "Аудио до начала речи.",
-            "Audio before speech begins.",
+            *translation_source('Предбуфер (сек)', 'Pre-buffer (sec)'),
+            *translation_source('Аудио до начала речи.', 'Audio before speech begins.'),
             "fa5s.backward",
         ),
         (
@@ -463,10 +446,8 @@ def build_microphone_settings_ui(self, parent_layout):
             30,
             1,
             1,
-            "Макс. речь (сек)",
-            "Max speech (sec)",
-            "Максимальная длительность одной фразы.",
-            "Maximum duration of one phrase.",
+            *translation_source('Макс. речь (сек)', 'Max speech (sec)'),
+            *translation_source('Максимальная длительность одной фразы.', 'Maximum duration of one phrase.'),
             "fa5s.hourglass-end",
         ),
         (
@@ -477,10 +458,8 @@ def build_microphone_settings_ui(self, parent_layout):
             0.35,
             0.05,
             2,
-            "Мин. речь (сек)",
-            "Min speech (sec)",
-            "Отсеивать щелчки и короткие звуки. 0 — отключить.",
-            "Filter clicks and short sounds. 0 disables the filter.",
+            *translation_source('Мин. речь (сек)', 'Min speech (sec)'),
+            *translation_source('Отсеивать щелчки и короткие звуки. 0 — отключить.', 'Filter clicks and short sounds. 0 disables the filter.'),
             "fa5s.filter",
         ),
     ]

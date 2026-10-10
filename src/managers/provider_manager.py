@@ -13,6 +13,7 @@ from handlers.llm_providers.http_transport import LLMHttpClient
 
 _PROVIDER_TYPES = (
     ("handlers.llm_providers.openai_provider", "OpenAIProvider"),
+    ("handlers.llm_providers.chatgpt_plan_provider", "ChatGPTPlanProvider"),
     ("handlers.llm_providers.gemini_provider", "GeminiProvider"),
     ("handlers.llm_providers.common_provider", "CommonProvider"),
     ("handlers.llm_providers.g4f_provider", "G4FProvider"),

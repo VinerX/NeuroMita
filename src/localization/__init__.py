@@ -33,6 +33,13 @@ _loaded: set[str] = set()
 _lock = threading.RLock()
 
 BASE_LANGUAGE = "RU"
+
+
+def translation_source(ru: str, en: str = "") -> tuple[str, str]:
+    """Keep a source pair unevaluated in declarative UI data."""
+    return ru, en
+
+
 COMPACT_UI_LANGUAGES: tuple[str, ...] = ("RU", "EN")
 LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "RU": "Русский",

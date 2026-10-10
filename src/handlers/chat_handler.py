@@ -16,6 +16,8 @@ from managers.model_config_loader import ModelConfigLoader
 from managers.tools.tool_manager import ToolManager
 
 from handlers.llm_providers.base import LLMRequest, LLMResponse
+from schemas.sparse_structured_response import provider_structured_model
+from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
     build_openrouter_session_id,
     normalize_openrouter_routing,
@@ -326,7 +328,10 @@ class ChatModel:
                 native_parameters=native_parameters,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
-                structured_model=structured_model,
+                structured_model=(
+                    provider_structured_model(structured_model or StructuredResponse, caps)
+                    if caps.get("structured_output") else structured_model
+                ),
             )
 
             req.extra["tool_manager"] = self.tool_manager

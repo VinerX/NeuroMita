@@ -23,6 +23,9 @@ from services.contracts import ASRCaptureState, InstallableCatalogService, Speec
 from main_logger import logger
 from services.asr_settings_service import ensure_asr_settings_service
 from handlers.asr_input_gate import normalize_input_mode
+from localization.schema import option_label
+from localization.live import register
+import weakref
 from utils import getTranslationVariant as _
 from .base_controller import BaseController
 
@@ -215,6 +218,15 @@ class MicrophoneSettingsController(BaseController):
 
         safe_disconnect(v.asr_language_combobox.activated, self._on_asr_language_changed)
         v.asr_language_combobox.activated.connect(self._on_asr_language_changed)
+        controller_ref = weakref.ref(self)
+
+        def refresh_language(_widget):
+            controller = controller_ref()
+            if controller is not None and not controller._closed:
+                controller._refresh_asr_language()
+
+        register(v.asr_language_combobox, refresh_language)
+
 
         safe_disconnect(v.mic_active_checkbox.stateChanged, self._on_active_toggled)
         v.mic_active_checkbox.stateChanged.connect(self._on_active_toggled)
@@ -897,9 +909,8 @@ class MicrophoneSettingsController(BaseController):
             if field is None:
                 hint.setText(_("Выбор языка для этой модели недоступен.", "Language selection is unavailable for this model."))
                 return
-            labels = field.get("option_labels") or {}
             for code in field.get("options") or []:
-                combo.addItem(str(labels.get(code, code)), str(code))
+                combo.addItem(option_label(field, code), str(code))
             values = catalog.load_settings(f"asr:{engine}")
             selected = str(values.get("language") or field.get("default") or "")
             index = combo.findData(selected)

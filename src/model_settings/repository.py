@@ -47,6 +47,8 @@ class SchemaRepository:
                 except (ValueError, OSError) as exc:
                     raise SchemaError(f"{path.name}: {exc}") from exc
                 identifier = schema.data["id"]
+                if identifier == 'chatgpt-plan' and schema.data['dialect'] == 'openai_chat_completions':
+                    schema = SettingsSchema.from_dict({**schema.data, 'dialect': 'openai_responses'})
                 if identifier in external:
                     raise SchemaError(f"Duplicate external schema id: {identifier}")
                 external[identifier] = schema

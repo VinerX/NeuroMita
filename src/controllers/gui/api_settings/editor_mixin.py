@@ -412,6 +412,8 @@ class EditorMixin:
 
         v.key_help_label.setVisible(bool(key_url))
         v.key_help_label.setText(f'<a href="{key_url}" style="color: {THEME["link"]}; text-decoration: underline;">{_("Получить ключ", "Get API key")}</a>' if key_url else "")
+        if hasattr(self, '_apply_provider_ui'):
+            self._apply_provider_ui(self._current_protocol_id_ui())
 
     def _pipeline_editable(self) -> bool:
         return self._parse_base(self.view.template_combo.currentData()) is None or bool(

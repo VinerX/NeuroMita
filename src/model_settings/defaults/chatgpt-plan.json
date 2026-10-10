@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "chatgpt-plan",
+  "revision": 3,
+  "title": {"ru": "ChatGPT Plan", "en": "ChatGPT Plan"},
+  "description": {
+    "ru": "Доступность параметров зависит от выбранной модели. Выключенные параметры не отправляются. Подписка не поддерживает temperature, top_p и ограничение числа токенов ответа.",
+    "en": "Parameter availability depends on the selected model. Unchecked parameters are omitted. Plan usage does not support temperature, top_p or an output token limit."
+  },
+  "dialect": "openai_responses",
+  "supports": {"structured_output": true, "tools_native": true, "streaming": true},
+  "documentation_url": "https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations",
+  "fields": [
+    {
+      "id": "reasoning_effort",
+      "title": {"ru": "Усилие рассуждения", "en": "Reasoning effort"},
+      "type": "string",
+      "path": ["reasoning", "effort"],
+      "enum": ["none", "low", "medium", "high"],
+      "default": "medium",
+      "enabled_by_default": false
+    },
+    {
+      "id": "verbosity",
+      "title": {"ru": "Подробность ответа", "en": "Response verbosity"},
+      "type": "string",
+      "path": ["text", "verbosity"],
+      "enum": ["low", "medium", "high"],
+      "default": "medium",
+      "enabled_by_default": false
+    }
+  ]
+}

@@ -21,6 +21,7 @@ def migrate_generation_settings(service, preset, dialect, settings=None):
     suggested = str(preset.get("settings_schema_id") or "")
     protocol = next((item for item in API_PROTOCOLS_DATA if item["id"] == preset.get("protocol_id")), {})
     suggested = suggested or str(protocol.get("settings_schema_id") or "")
+    suggested = (protocol.get('settings_schema_migrations') or {}).get(suggested, suggested)
     control = str((protocol.get("capabilities") or {}).get("reasoning_control") or "")
     control = str(((preset.get("protocol_overrides") or {}).get("capabilities") or {}).get("reasoning_control", control))
     if not suggested and control in {"openrouter", "reasoning_effort"}:

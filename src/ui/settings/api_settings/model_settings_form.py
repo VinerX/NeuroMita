@@ -127,6 +127,13 @@ class ModelSettingsForm(QWidget):
         self.fields.clear()
         self.support_fields.clear()
         self.orphan_fields.clear()
+        self.sparse_response = tr_set(QCheckBox(), "Компактный структурированный ответ", "Compact structured response")
+        tr_set(self.sparse_response,
+               "Текст и только нужные действия в events. Выключите для прежнего полного JSON. Настройка принадлежит этому пресету и применяется со следующего запроса.",
+               "Text and only needed operations in events. Disable for the previous full JSON. This setting belongs to this preset and applies from the next request.", "setToolTip")
+        self.sparse_response.setChecked(document.get("sparse_response", schema.data["dialect"] == "openai_responses"))
+        self.sparse_response.toggled.connect(self._field_changed)
+        self.rows.addWidget(self.sparse_response)
         for spec in schema.fields:
             row = QWidget()
             row.setObjectName("ApiGenerationRow")
@@ -219,7 +226,7 @@ class ModelSettingsForm(QWidget):
         if self._schema is None:
             return
         language = localization._current_language()
-        format_name = {"gemini_generate_content": "Google Gemini API", "openai_chat_completions": "OpenAI Compatible", "g4f": "GPT4Free"}[self._schema.data["dialect"]]
+        format_name = {"gemini_generate_content": "Google Gemini API", "openai_chat_completions": "OpenAI Compatible", "openai_responses": "OpenAI Responses", "g4f": "GPT4Free"}[self._schema.data["dialect"]]
         self.format_label.setText(str(_("Формат параметров: ", "Parameter format: ")) + format_name)
         definition_note = self._schema.data.get("description")
         self.schema_description.setText(schema_text(definition_note, language))
@@ -240,6 +247,7 @@ class ModelSettingsForm(QWidget):
         if self._document is None:
             return None
         result = deepcopy(self._document)
+        result["sparse_response"] = self.sparse_response.isChecked()
         result["enabled"] = [key for key, editor in self.orphan_fields.items() if editor.isChecked()]
         overrides = {key: editor.isChecked() for key, editor in self.support_fields.items() if editor.isChecked() != self._schema.data.get("supports", {}).get(key, True)}
         if overrides:

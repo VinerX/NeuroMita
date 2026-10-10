@@ -15,6 +15,9 @@ from presets.api_endpoints import server_address
 from ui.provider_icons import template_provider, provider_icon
 
 
+from services.provider_settings import describe_protocol
+
+
 class PresetsMixin:
     def _item_cls(self):
         # Lazy import to avoid import-time crashes / circular deps
@@ -79,8 +82,8 @@ class PresetsMixin:
             v.template_combo.clear()
             v.template_combo.add_tr_item("Без шаблона", "No template", value=None)
             v.template_combo.setItemIcon(0, provider_icon(""))
-            priority = {"Google AI Studio": 0, "OpenRouter": 1, "Mistral AI": 2}
-            ordered_templates = sorted(builtin, key=lambda p: priority.get(str(getattr(p, "name", "")), 3))
+            priority = {"Google AI Studio": 1, "OpenRouter": 2, "Mistral AI": 3, "ChatGPT Plan (Codex)": 5}
+            ordered_templates = sorted(builtin, key=lambda p: priority.get(str(getattr(p, "name", "")), 4))
             for p in ordered_templates:
                 v.template_combo.add_provider_item(
                     getattr(p, "name", ""), value=getattr(p, "id", None),
@@ -272,7 +275,10 @@ class PresetsMixin:
             v.reserve_keys_row.set_distribute(reserve_keys_distribute)
 
             dialect = str((self._protocols.get(eff_pid) or {}).get("dialect") or "openai_chat_completions")
-            self.model_settings_controller.load(preset, dialect, v.settings)
+            self.model_settings_controller.load(
+                preset, dialect, v.settings,
+                provider=str((self._protocols.get(eff_pid) or {}).get("provider") or ""),
+            )
 
             openrouter_routing = preset.get("openrouter_routing") or {}
             if isinstance(openrouter_routing, dict):
@@ -299,6 +305,7 @@ class PresetsMixin:
 
             v.provider_label.setText(str(preset.get("name", "")))
             v.preset_name_row.set_text(preset.get("name", ""))
+            self._apply_provider_ui(eff_pid)
             v.api_settings_container.setVisible(True)
             v.preset_active_tag.setVisible(int(v.settings.get("LAST_API_PRESET_ID", 0) or 0) == int(preset_id))
 
@@ -322,3 +329,30 @@ class PresetsMixin:
                     self._selection_retry_count = 0
 
         self._bus_call_async(_call, _apply, name="load_preset")
+
+    def _apply_provider_ui(self, protocol_id: str) -> None:
+        v = self.view
+        descriptor = describe_protocol(protocol_id)
+        fields = descriptor.settings
+        if hasattr(v, 'subscription_info'):
+            v.subscription_info.configure(descriptor)
+        v.test_button.setProperty('connectionActionLabel', descriptor.action_label)
+        if not v.test_button.property('apiTesting'):
+            v.test_button.setText(_(*descriptor.action_label))
+        v.api_url_row.setVisible(fields.api_url)
+        v.api_key_row.setVisible(fields.api_key)
+        v.reserve_keys_section.setVisible(fields.reserve_keys)
+        v.api_settings_container.setTabEnabled(1, fields.generation_parameters)
+        if not fields.generation_parameters and v.api_settings_container.currentIndex() == 1:
+            v.api_settings_container.setCurrentIndex(0)
+        if descriptor.account_actions:
+            v.test_button.setVisible(True)
+            v.test_button.setEnabled(not bool(v.test_button.property('apiTesting')))
+        if hasattr(v, 'api_test_url_row') and not fields.api_url:
+            v.api_test_url_row.setVisible(False)
+        if hasattr(v, 'account_button'):
+            v.account_button.setVisible(descriptor.account_actions)
+            v.account_button.setEnabled(not bool(v.test_button.property('apiTesting')))
+        if hasattr(v, 'models_button'):
+            v.models_button.setVisible(descriptor.account_actions)
+            v.models_button.setEnabled(not bool(v.test_button.property('apiTesting')))

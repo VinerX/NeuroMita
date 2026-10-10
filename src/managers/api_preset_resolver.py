@@ -129,6 +129,7 @@ class ApiPresetResolver:
         document = self.model_settings_service.for_preset(preset or {}, dialect_id, self.settings)
         native_parameters = self.model_settings_service.compile(document, dialect_id)
         capabilities = self.model_settings_service.capabilities(document, dialect_id, capabilities)
+        capabilities.setdefault("sparse_response", provider_name == "chatgpt_plan")
 
         # headers: let ProtocolsController build final headers/auth,
         # but allow preset overrides to contribute extra headers.

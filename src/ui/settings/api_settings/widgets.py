@@ -114,6 +114,21 @@ class ProviderDelegate(QStyledItemDelegate):
             badges.append(self._local_pixmap())
         elif kind == "ru":
             badges.append(self._ru_pixmap())
+        elif kind == "subscription":
+            text = str(_("Подписка", "Subscription"))
+            font = QFont("Segoe UI", 7, QFont.Weight.Bold)
+            pm = QPixmap(QFontMetrics(font).horizontalAdvance(text) + 8, 14)
+            pm.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(QColor(THEME["accent"]))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(pm.rect(), 3, 3)
+            painter.setPen(QColor("#ffffff"))
+            painter.setFont(font)
+            painter.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, text)
+            painter.end()
+            badges.append(pm)
         if kind != "local":
             if pricing in ("free", "mixed"):
                 badges.append(self._free_pixmap())

@@ -133,6 +133,7 @@ class LLMHttpClient:
         headers: Mapping[str, str] | None,
         payload: Any,
         stream: bool,
+        follow_redirects: bool | None = None,
     ) -> httpx.Response:
         check_request_cancelled(req)
         payload_size = estimate_json_size(payload)
@@ -144,7 +145,8 @@ class LLMHttpClient:
             json=payload,
             timeout=timeout.to_httpx(),
         )
-        response = self._http_client.send(request, stream=True)
+        options = {} if follow_redirects is None else {'follow_redirects': follow_redirects}
+        response = self._http_client.send(request, stream=True, **options)
         record_response_headers_received(req)
         register_cancellable_resource(req, response)
         if not stream:

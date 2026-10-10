@@ -21,6 +21,8 @@ from .base import (
 )
 from .streaming import StreamAccumulator, iter_json_values, iter_sse_data, track_response_body
 from .message_transforms import iter_positioned_messages
+from services.structured_response_capabilities import provider_schema_options
+from schemas.sparse_structured_response import provider_structured_model
 
 
 class GeminiProvider(BaseProvider):
@@ -345,18 +347,12 @@ class GeminiProvider(BaseProvider):
             mode = caps.get("structured_output_mode", "gemini_schema")
             if mode != "gemini_prompt":
                 model_cls = req.structured_model or StructuredResponse
-                has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
-                excl = set() if has_custom else {"custom_fields"}
-                if not caps.get("schema_reasoning", True):
-                    excl.add("reasoning")
-                excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
-                segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
-                if not caps.get("schema_intents", True):
-                    segment_excl.add("intents")
+                model_cls = provider_structured_model(model_cls, caps)
+                schema_options = provider_schema_options(caps)
                 schema = model_cls.gemini_schema_dict(
-                    exclude_fields=excl or None,
-                    exclude_segment_fields=segment_excl or None,
-                    require_fields=set(caps.get("structured_required_fields") or ()) or None,
+                    exclude_fields=schema_options["exclude_fields"] or None,
+                    exclude_segment_fields=schema_options["exclude_segment_fields"] or None,
+                    require_fields=schema_options["require_fields"] or None,
                 )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")

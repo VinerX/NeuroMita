@@ -9,6 +9,7 @@ import datetime
 import re
 import copy
 import threading
+from types import SimpleNamespace
 from typing import Optional, Any
 
 from handlers.chat_handler import ChatModel
@@ -43,6 +44,10 @@ from core.request_policy import RequestPolicy, resolve_policy
 from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
+from services.structured_response_capabilities import (
+    StructuredResponseCapabilities,
+    resolve_structured_response_capabilities,
+)
 from domain.world_character_relations import get_world_context_text
 from domain.conversation_message_ids import ConversationMessageIds
 from utils.structured_response_parser import (
@@ -367,11 +372,14 @@ class ModelController(GenerationService, ModelStateService):
         return self._get_game_state_for_character(character_id)
 
     def _remote_only_structured_segment_fields(self) -> list[str]:
-        capabilities = runtime_capabilities(settings=self.settings)
-        return list(capabilities.structured_segment_exclude_fields)
+        return list(runtime_capabilities(settings=self.settings).structured_segment_exclude_fields)
 
     @staticmethod
     def _sanitize_structured_segment_fields(structured, capabilities: dict) -> None:
+        profile = (capabilities or {}).get("structured_response_profile")
+        if profile is not None:
+            profile.sanitize_response(structured)
+            return
         excluded = {
             str(name).strip()
             for name in (capabilities or {}).get("structured_segment_exclude_fields", ())
@@ -441,6 +449,11 @@ class ModelController(GenerationService, ModelStateService):
             if not collector.is_enabled():
                 return
 
+            capability_snapshot = copy.deepcopy(prompt_request.capabilities)
+            profile_snapshot = capability_snapshot.get("structured_response_profile")
+            if isinstance(profile_snapshot, StructuredResponseCapabilities):
+                capability_snapshot["structured_response_profile"] = profile_snapshot.to_dict()
+
             incoming = {
                 "user_input": request.user_input,
                 "system_input": request.system_input,
@@ -473,7 +486,7 @@ class ModelController(GenerationService, ModelStateService):
                 "game_state": copy.deepcopy(prompt_request.game_state),
                 "sender": prompt_request.sender,
                 "participants": list(prompt_request.participants or []),
-                "capabilities": copy.deepcopy(prompt_request.capabilities),
+                "capabilities": capability_snapshot,
                 "image_data": self._summarize_image_data_for_capture(prompt_request.image_data),
             }
 
@@ -1466,10 +1479,6 @@ class ModelController(GenerationService, ModelStateService):
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {format_exception(e)}")
 
-        remote_only_segment_fields = self._remote_only_structured_segment_fields()
-        if remote_only_segment_fields:
-            effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
-
         if is_game_master:
             effective_capabilities["structured_output"] = True
 
@@ -1477,6 +1486,7 @@ class ModelController(GenerationService, ModelStateService):
             bool(self.settings.get("TOOLS_ON", True))
             and not is_game_master
             and bool(effective_capabilities.get("tools_prompt_enabled", True))
+            and int(self.settings.get("TOOL_MAX_DEPTH", 2)) > 0
         )
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
@@ -1484,6 +1494,7 @@ class ModelController(GenerationService, ModelStateService):
         _enabled_tools = [
             n for n in _ALL_TOOLS_LIST
             if self.settings.get(f"TOOL_ENABLED_{n}", _DEFAULT_TOOL_ENABLED.get(n, False))
+            and (n != "reminder" or bool(self.settings.get("REMINDERS_ENABLED", True)))
         ]
         if not _enabled_tools:
             _tools_on = False
@@ -1491,7 +1502,15 @@ class ModelController(GenerationService, ModelStateService):
         if _tools_on and effective_capabilities.get("structured_output", False):
             try:
                 schema = self.model.tool_manager._filtered_schema(_enabled_tools)
-                effective_capabilities["tools_prompt"] = _render_tools_for_prompt(schema)
+                _enabled_tools = sorted({
+                    str(tool.get("name") or "").strip()
+                    for tool in schema
+                    if isinstance(tool, dict) and str(tool.get("name") or "").strip()
+                })
+                _tools_on = bool(_enabled_tools)
+                effective_capabilities["tools_prompt"] = (
+                    _render_tools_for_prompt(schema) if _tools_on else ""
+                )
             except Exception as e:
                 logger.warning(f"[ModelController] Failed to build tools prompt: {format_exception(e)}")
                 _tools_on = False
@@ -1505,35 +1524,13 @@ class ModelController(GenerationService, ModelStateService):
         effective_capabilities["schema_reasoning"] = self._resolve_preset_bool(
             effective_preset, "schema_reasoning", "SCHEMA_REASONING", default=False
         )
-        # Working state is an application-level opt-in, independent of native
-        # provider reasoning. When off, remove its field from strict schemas so
-        # the model's old response contract remains byte-for-byte compatible.
-        effective_capabilities["working_state"] = bool(
-            self.settings.get("ENABLE_WORKING_STATE", False)
-            and effective_capabilities.get("structured_output", False)
-        )
         effective_capabilities["action_memory"] = bool(
             self.settings.get("ENABLE_ACTION_MEMORY", False)
         )
-        if not effective_capabilities["working_state"]:
-            excluded_fields = set(effective_capabilities.get("structured_exclude_fields") or ())
-            excluded_fields.add("working_state")
-            effective_capabilities["structured_exclude_fields"] = tuple(sorted(excluded_fields))
 
         # The selected DSL template is the only owner of intent support. The
         # capability is finalized after PromptController processes the template.
         effective_capabilities["schema_intents"] = False
-
-        # Пока секрет персонажа не раскрыт, secret_exposed в схеме провайдера
-        # обязателен: опциональное поле constrained decoding молча пропускает,
-        # и модель писала реплику-раскрытие без флага — текст и состояние
-        # расходились. Required + nullable заставляет решать каждый ход.
-        from characters import SecretExposedCharacter
-        if isinstance(char, SecretExposedCharacter):
-            with character_lock(char_id):
-                _secret_open = bool(char.get_variable("secretExposed", False))
-            if not _secret_open:
-                effective_capabilities["structured_required_fields"] = ("secret_exposed",)
 
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
@@ -1617,6 +1614,40 @@ class ModelController(GenerationService, ModelStateService):
             except Exception as _desc_exc:
                 logger.warning(f"[ModelController] Image description fallback failed: {format_exception(_desc_exc)}")
 
+        from characters import SecretExposedCharacter
+        with character_lock(char_id):
+            secret_revealed = bool(
+                char.get_variable("secretExposed", False)
+                or char.get_variable("secretExposedFirst", False)
+            ) if isinstance(char, SecretExposedCharacter) else False
+            has_custom_params = bool(getattr(char, "custom_params", []) or [])
+        profile = resolve_structured_response_capabilities(
+            settings=self.settings,
+            runtime=runtime_capabilities(settings=self.settings),
+            character=SimpleNamespace(
+                secret_capable=isinstance(char, SecretExposedCharacter),
+                secret_revealed=secret_revealed,
+            ),
+            structured_output=bool(effective_capabilities.get("structured_output", False)),
+            tools_enabled=_tools_on,
+            enabled_tools=_enabled_tools if _tools_on else (),
+            tools_mode=_tools_mode,
+            tool_depth=0,
+            tool_max_depth=int(self.settings.get("TOOL_MAX_DEPTH", 2)),
+            images_available=bool(image_data),
+            has_custom_params=has_custom_params,
+            schema_reasoning=bool(effective_capabilities.get("schema_reasoning", False)),
+            sparse_enabled=bool(effective_capabilities.get("sparse_response", False)),
+        )
+        effective_capabilities["structured_response_profile"] = profile
+        effective_capabilities["working_state"] = "working_state" not in profile.excluded_fields
+        effective_capabilities["structured_prompt_features"] = profile.prompt_features()
+        effective_capabilities.update({
+            "structured_exclude_fields": profile.excluded_fields,
+            "structured_segment_exclude_fields": profile.excluded_segment_fields,
+            "structured_required_fields": profile.required_fields,
+        })
+
         prompt_request = PromptBuildRequest(
             character=char,
             event_type=event_type,
@@ -1670,20 +1701,17 @@ class ModelController(GenerationService, ModelStateService):
             })
             return None
 
-        excluded_segment_fields = {
-            str(name).strip()
-            for name in effective_capabilities.get("structured_segment_exclude_fields", ())
-            if str(name).strip()
-        }
-        intents_available = bool(prompt_data.support_intents) and "intents" not in excluded_segment_fields
-        effective_capabilities["schema_intents"] = intents_available
-        if intents_available:
-            excluded_segment_fields.discard("intents")
-        else:
-            excluded_segment_fields.add("intents")
-        effective_capabilities["structured_segment_exclude_fields"] = tuple(
-            sorted(excluded_segment_fields)
+        profile = effective_capabilities["structured_response_profile"].with_prompt_intents(
+            bool(prompt_data.support_intents)
         )
+        effective_capabilities["structured_response_profile"] = profile
+        effective_capabilities["schema_intents"] = profile.prompt_intents
+        effective_capabilities["structured_prompt_features"] = profile.prompt_features()
+        effective_capabilities.update({
+            "structured_exclude_fields": profile.excluded_fields,
+            "structured_segment_exclude_fields": profile.excluded_segment_fields,
+            "structured_required_fields": profile.required_fields,
+        })
 
         combined_messages = prompt_data.messages
 
@@ -2111,6 +2139,11 @@ class ModelController(GenerationService, ModelStateService):
                 parse_outcome = parse_structured_response_with_meta(
                     visible_raw,
                     model_cls=structured_model_cls,
+                    profile=(
+                        capabilities["structured_response_profile"].at_tool_depth(tool_depth)
+                        if isinstance((capabilities or {}).get("structured_response_profile"), StructuredResponseCapabilities)
+                        else None
+                    ),
                 )
                 structured = parse_outcome.response
         except StructuredResponseParseError as e:
@@ -2187,7 +2220,11 @@ class ModelController(GenerationService, ModelStateService):
                 control_plane_trusted=False,
             )
 
-        self._sanitize_structured_segment_fields(structured, capabilities)
+        profile = (capabilities or {}).get("structured_response_profile")
+        if isinstance(profile, StructuredResponseCapabilities):
+            profile.at_tool_depth(tool_depth).sanitize_response(structured)
+        else:
+            self._sanitize_structured_segment_fields(structured, capabilities)
 
         # Apply and snapshot character state in a short critical section. Tool
         # execution and any follow-up provider request happen after this lock.
@@ -2563,6 +2600,28 @@ class ModelController(GenerationService, ModelStateService):
         if _result_mode in ("user", "both"):
             combined_messages_v2.append({"role": "user", "content": _user_content})
 
+        continuation_capabilities = dict(capabilities or {})
+        continuation_profile = continuation_capabilities.get("structured_response_profile")
+        if isinstance(continuation_profile, StructuredResponseCapabilities):
+            continuation_profile = continuation_profile.at_tool_depth(tool_depth + 1)
+            continuation_capabilities["structured_response_profile"] = continuation_profile
+            continuation_capabilities["structured_exclude_fields"] = continuation_profile.excluded_fields
+            continuation_capabilities["structured_segment_exclude_fields"] = continuation_profile.excluded_segment_fields
+            continuation_capabilities["structured_required_fields"] = continuation_profile.required_fields
+            continuation_capabilities["structured_prompt_features"] = continuation_profile.prompt_features()
+            if continuation_profile.sparse_enabled:
+                from services.sparse_response_prompt import render_sparse_response_contract
+                combined_messages_v2.append({
+                    "role": "system",
+                    "content": render_sparse_response_contract(continuation_profile, structured_model_cls),
+                })
+            if not continuation_profile.can_call_tools:
+                continuation_capabilities["tools_prompt"] = ""
+                combined_messages_v2.append({
+                    "role": "system",
+                    "content": "The tool-call depth limit is reached. Do not request another tool; answer from the tool result and available context.",
+                })
+
         # Second LLM call
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
             "character_id": char_id,
@@ -2573,7 +2632,7 @@ class ModelController(GenerationService, ModelStateService):
             llm_response_2 = self.model.generate(
                 combined_messages_v2,
                 preset_id=preset_id,
-                capabilities_override=(capabilities or None),
+                capabilities_override=(continuation_capabilities or None),
                 request_options_override={"trace_id": trace_id} if trace_id else None,
                 structured_model=structured_model_cls,
                 context_character_id=char_id,
@@ -2629,7 +2688,7 @@ class ModelController(GenerationService, ModelStateService):
             char_id=char_id,
             char_name=char_name,
             origin_message_id=origin_message_id,
-            capabilities=capabilities,
+            capabilities=continuation_capabilities,
             policy=policy,
             sender=sender,
             participants=participants,
