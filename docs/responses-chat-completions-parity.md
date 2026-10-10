@@ -8,6 +8,32 @@ decode responses and consume typed wire events. Credentials and endpoint trust
 remain provider responsibilities. Each dialect has its own request/response/stream
 modules rather than a second execution pipeline.
 
+Current runtime: `adapter_for()` selects one of two codecs. Chat Completions has
+one encoder owning messages, generation parameters, OpenRouter options, tools and
+response format. Providers no longer build payloads or pass builders back into
+adapters. Responses retains its API-key and SIWC policies. Both use direct HTTP;
+the OpenAI SDK transport and g4f have been removed. Saved `provider="openai"`
+configurations route to the HTTP provider.
+
+Adapters return `LLMResponse.protocol_history`, keyed by wire dialect. The native
+tool bridge carries this data without inspecting provider `output` or `choices`.
+Each encoder restores its own history, preserving encrypted reasoning and tool
+extensions. Older persisted inline history remains readable. Unknown explicit
+protocol IDs are rejected instead of being replaced by a default protocol.
+
+Offline verification after this cleanup: 520 tests and 20 subtests passed. One
+GUI startup-order test was excluded after reproducing its missing Qt/logger
+stubs on unchanged HEAD `2d5fc06f`. The batch included all `tests/` and the model
+settings, HTTP transport, provider errors, sparse/structured capabilities,
+generation parameter mapping, model profiles, launcher, HTTP registry, API
+startup, headless runtime, GUI startup, architecture, runtime capabilities and
+pip uninstall regression modules under `src/utils/Testing`.
+After moving response-format fallback payload construction into the Chat codec,
+84 Chat/HTTP tests and seven schema compatibility tests also passed.
+Both `fast` and `full` builds passed. A cold runtime test loaded both adapters
+from the resulting `.pyz`, without source `src` and with OpenAI SDK imports
+blocked, and completed mock HTTP requests. Live API acceptance was not rerun.
+
 Execution plan:
 
 1. Record current tests and add normalized ToolCall/ToolResult response contract.
@@ -29,7 +55,7 @@ SIWC retains forced SSE, namespace policy, the exact OpenAI endpoint, blocked
 redirects and protected credential headers. No OAuth dependency enters the generic
 API-key provider. Existing protocol and template IDs remain valid.
 
-Verification on 2026-10-10:
+Verification on 2026-10-10 before removal of the SDK transport:
 
 - Initial baseline: 44 existing Responses/SIWC and HTTP transport tests passed.
 - Offline CI regression suite: 343 tests and 3 subtests passed in a clean

@@ -1,6 +1,5 @@
 pytest>=8,<10
 httpx[http2]>=0.27,<0.29
-openai>=1.61,<2
 pydantic>=2.10,<3
 portalocker>=3,<5
 pywin32>=308; sys_platform == "win32"

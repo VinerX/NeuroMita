@@ -16,8 +16,6 @@ eval-type-backport==0.2.2
 ffmpeg-python==0.2.0
 frozenlist==1.5.0
 future==1.0.0
-# g4f==0.4.8.3
-# g4f~=0.4.7.7
 h11==0.14.0
 httpcore==1.0.7
 # httpx==0.28.1
@@ -31,7 +29,6 @@ mypy-extensions==1.0.0
 nest-asyncio==1.6.0
 num2words2==1.0.20
 # numpy==2.2.3
-openai==1.61.1
 packaging==24.2
 pefile==2023.2.7
 pip==25.0.1
