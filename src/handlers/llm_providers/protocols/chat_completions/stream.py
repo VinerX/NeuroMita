@@ -6,7 +6,7 @@ from dataclasses import replace
 from ...base import LLMRequest, LLMResponse, check_request_cancelled
 from ...errors import build_stream_error
 from ...streaming import StreamAccumulator
-from .response import content_text, extract_usage, reasoning_text, terminal_error
+from .response import content_text, extract_usage, history_for_message, reasoning_text, terminal_error
 from .tools import ToolCallAccumulator
 
 
@@ -67,6 +67,7 @@ def consume_stream(req: LLMRequest, chunks: Iterable[dict], *, provider: str = "
         message["reasoning_content"] = "".join(accumulator.reasoning_parts)
     response.raw = {"model": response.model,
                     "choices": [{"message": message, "finish_reason": finish}]}
+    response.protocol_history = history_for_message(message)
     if response.usage is not None:
         response.raw["usage"] = dict(response.usage.raw)
     if not response.text and not response.tool_calls:

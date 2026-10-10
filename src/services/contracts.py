@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -381,6 +382,10 @@ class AppVarsService(ABC):
 
 
 class CharacterRegistry(ABC):
+    def stats_of(self, character_id: str) -> Dict[str, float]:
+        """Read statistics without materializing a character runtime."""
+        return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+
     @abstractmethod
     def get(self, character_id: str) -> Any:
         """Ссылка на персонажа или None, если такого id нет."""
@@ -948,8 +953,6 @@ class ModelStateService(ABC):
     @abstractmethod
     def token_stats(self) -> Dict[str, Any]: ...
 
-    @abstractmethod
-    def schedule_g4f_update(self, version: str = "latest") -> bool: ...
 
 
 class ChatService(ABC):
@@ -1245,6 +1248,17 @@ class AIEngineAdministrationService(ABC):
 
     @abstractmethod
     def resume_after_maintenance(self) -> bool: ...
+
+    @contextmanager
+    def maintenance_session(self, *, timeout: float = 15.0):
+        """Keep inference suspended until filesystem maintenance finishes."""
+        if not self.suspend_for_maintenance(timeout=timeout):
+            raise RuntimeError("AI workers could not be stopped")
+        try:
+            yield
+        finally:
+            if not self.resume_after_maintenance():
+                raise RuntimeError("AI workers could not be restarted")
 
 
 class HardwareInventoryService(ABC):

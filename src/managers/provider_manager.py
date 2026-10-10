@@ -13,12 +13,10 @@ from handlers.llm_providers.errors import LLMProviderError
 
 
 _PROVIDER_TYPES = (
-    ("handlers.llm_providers.openai_provider", "OpenAIProvider"),
     ("handlers.llm_providers.chatgpt_plan_provider", "ChatGPTPlanProvider"),
     ("handlers.llm_providers.responses_provider", "ResponsesProvider"),
     ("handlers.llm_providers.gemini_provider", "GeminiProvider"),
     ("handlers.llm_providers.common_provider", "CommonProvider"),
-    ("handlers.llm_providers.g4f_provider", "G4FProvider"),
 )
 
 
@@ -82,6 +80,11 @@ class ProviderManager:
         provider_key = req.provider_name
         if req.dialect_id == "openai_responses" and provider_key in {"common", "openai"}:
             provider_key = "responses"
+        elif provider_key == "openai":
+            provider_key = "common"
+            req.dialect_id = req.dialect_id or "openai_chat_completions"
+            req.api_url = req.api_url or "https://api.openai.com/v1"
+            req.capabilities.setdefault("supports_stream_usage", True)
         provider = self._find_by_name(provider_key)
         if not provider:
             details = "; ".join(f"{name}: {format_exception(error)}" for name, error in self._unavailable.items())

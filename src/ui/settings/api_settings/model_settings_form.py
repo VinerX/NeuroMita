@@ -226,7 +226,7 @@ class ModelSettingsForm(QWidget):
         if self._schema is None:
             return
         language = localization._current_language()
-        format_name = {"gemini_generate_content": "Google Gemini API", "openai_chat_completions": "OpenAI Compatible", "openai_responses": "OpenAI Responses", "g4f": "GPT4Free"}[self._schema.data["dialect"]]
+        format_name = {"gemini_generate_content": "Google Gemini API", "openai_chat_completions": "OpenAI Compatible", "openai_responses": "OpenAI Responses"}[self._schema.data["dialect"]]
         self.format_label.setText(str(_("Формат параметров: ", "Parameter format: ")) + format_name)
         definition_note = self._schema.data.get("description")
         self.schema_description.setText(schema_text(definition_note, language))

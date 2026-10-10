@@ -122,9 +122,6 @@ class LLMHttpClient:
     def http2_enabled(self) -> bool:
         return self._enable_http2 and self._http2_available
 
-    def client_for_url(self, url: str) -> httpx.Client:
-        return self._http_client.client_for_sdk()
-
     def post_json(
         self,
         req: LLMRequestLike,

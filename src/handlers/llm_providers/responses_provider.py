@@ -4,7 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .base import BaseProvider, LLMRequest, LLMResponse, check_request_cancelled, record_response_body_started
 from .errors import build_provider_error, coerce_provider_error
-from .protocols.responses import ResponsesAdapter
+from .protocols.registry import adapter_for
 from .protocols.responses.stream import iter_responses_events
 from .streaming import iter_sse_data
 
@@ -22,7 +22,7 @@ class ResponsesProvider(BaseProvider):
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         url = self._resolve_request_url(req)
-        adapter = ResponsesAdapter()
+        adapter = adapter_for('openai_responses')
         headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream' if req.wire_stream else 'application/json'}
         headers.update({str(k): str(v) for k, v in (req.headers or {}).items()
                         if k and v is not None and str(k).lower() not in {'authorization', 'content-type', 'accept'}})

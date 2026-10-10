@@ -1,16 +1,14 @@
 from core.error_utils import format_exception
 import json
 from concurrent.futures import ThreadPoolExecutor
-import logging
 import os
 import datetime
 import base64
 import re
-import uuid
 import hashlib
 import time
 from threading import Lock
-from typing import Any, Optional, ClassVar
+from typing import Any, Optional, ClassVar, Iterable
 
 from main_logger import logger
 from core.message_content import MessageContentCodec
@@ -1059,6 +1057,28 @@ class HistoryManager(CharacterScopedService):
     # ---------------------------------------------------------------------
     # Public API
     # ---------------------------------------------------------------------
+    def load_variables(self, keys: Iterable[str]) -> dict[str, Any]:
+        """Read selected persisted variables without loading conversation history."""
+        names = tuple(dict.fromkeys(str(key) for key in keys))
+        if not names:
+            return {}
+        conn = self.db.get_connection()
+        try:
+            placeholders = ",".join("?" for _ in names)
+            rows = conn.execute(
+                f"SELECT key, value FROM variables WHERE character_id = ? AND key IN ({placeholders})",
+                (self.storage_key, *names),
+            ).fetchall()
+            values = {}
+            for key, value in rows:
+                try:
+                    values[key] = json.loads(value)
+                except (TypeError, ValueError):
+                    values[key] = value
+            return values
+        finally:
+            conn.close()
+
     def load_history(self):
         conn = self.db.get_connection()
         try:
@@ -1223,7 +1243,6 @@ class HistoryManager(CharacterScopedService):
         """Экспортирует текущую активную историю в JSON-файл (бекап/снапшот).
         Сохраняет в Histories/{storage_key}/Saved/chat_history_{timestamp}.json.
         Возвращает путь к файлу или '' при ошибке."""
-        import shutil
         histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
         save_dir = os.path.join(histories_dir, self.storage_key, "Saved")
         os.makedirs(save_dir, exist_ok=True)

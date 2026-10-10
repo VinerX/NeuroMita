@@ -899,6 +899,8 @@ class MicrophoneSettingsController(BaseController):
         try:
             combo.clear()
             combo.setEnabled(False)
+            combo.setPlaceholderText(_("Выберите модель распознавания", "Select a recognition model"))
+            combo.setToolTip('')
             combo.setProperty("language_editable", False)
             combo.setProperty("engine_id", engine)
             if not engine or catalog is None:
@@ -907,6 +909,11 @@ class MicrophoneSettingsController(BaseController):
             field = next((entry for entry in catalog.settings_schema(f"asr:{engine}")
                           if entry.get("key") == "language"), None)
             if field is None:
+                combo.setPlaceholderText(_("Выбор языка для этой модели недоступен.", "Language selection is unavailable for this model."))
+                hint.setText(_("Выбор языка для этой модели недоступен.", "Language selection is unavailable for this model."))
+                return
+            if not field.get('options'):
+                combo.setPlaceholderText(_("Выбор языка для этой модели недоступен.", "Language selection is unavailable for this model."))
                 hint.setText(_("Выбор языка для этой модели недоступен.", "Language selection is unavailable for this model."))
                 return
             for code in field.get("options") or []:
@@ -927,6 +934,7 @@ class MicrophoneSettingsController(BaseController):
             combo.setToolTip(combo.currentText() + "\n" + help_text)
             hint.setText(help_text)
         except Exception as exc:
+            combo.setPlaceholderText(_("Не удалось загрузить языки: ", "Could not load languages: "))
             hint.setText(_("Не удалось загрузить языки: ", "Could not load languages: ") + format_exception(exc))
         finally:
             combo.blockSignals(False)

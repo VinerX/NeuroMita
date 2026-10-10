@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ...structured_output import responses_text_format
+from ..history import normalize_history_message
 from .tools import encode_tools
 
 
@@ -57,7 +58,8 @@ def _content(content: Any, role: str) -> str | list[dict[str, Any]]:
 
 def encode_request(req: Any, *, wire_stream: bool, policy: ResponsesPolicy) -> dict:
     items = []
-    for message in req.messages or []:
+    for source in req.messages or []:
+        message = normalize_history_message(source)
         role = str(message.get('role') or 'user').lower()
         if role == 'tool':
             call_id = message.get('tool_call_id')
@@ -71,8 +73,9 @@ def encode_request(req: Any, *, wire_stream: bool, policy: ResponsesPolicy) -> d
             role = 'developer'
         if role not in {'developer', 'user', 'assistant'}:
             raise ValueError(f'Unsupported Responses role: {role}')
-        if 'responses_output' in message:
-            raw_output = message['responses_output']
+        history = (message.get('protocol_history') or {}).get('openai_responses') or {}
+        if 'output' in history:
+            raw_output = history['output']
             if role != 'assistant' or not isinstance(raw_output, list):
                 raise ValueError('Invalid Responses output history')
             for item in raw_output:
@@ -80,7 +83,7 @@ def encode_request(req: Any, *, wire_stream: bool, policy: ResponsesPolicy) -> d
                     raise ValueError('Unsupported Responses output history item')
                 items.append(deepcopy(dict(item)))
             continue
-        for reasoning in message.get('responses_reasoning_items') or []:
+        for reasoning in history.get('reasoning_items') or []:
             if role != 'assistant' or not isinstance(reasoning, Mapping) or reasoning.get('type') != 'reasoning':
                 raise ValueError('Invalid Responses reasoning history item')
             items.append(deepcopy(dict(reasoning)))
@@ -110,7 +113,7 @@ def encode_request(req: Any, *, wire_stream: bool, policy: ResponsesPolicy) -> d
             payload[name] = deepcopy(parameters[name])
     if policy.force_store_false:
         payload['store'] = False
-    if req.tools_on:
+    if req.tools_on and getattr(req, 'tools_mode', 'native') == 'native':
         if (req.capabilities or {}).get('tools_native') is False:
             raise ValueError('Native tools are unsupported by this Responses endpoint')
         tools = encode_tools(req.tools_payload or [], namespace=policy.namespace)

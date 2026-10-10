@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Iterable
 from dataclasses import dataclass, asdict, field, replace
 from presets.api_endpoints import resolve_api_url, resolve_test_url
+from presets.model_selection import normalize_catalog_models
 from core.networking.errors import (
     NetworkRequestError,
     classify_network_error,
@@ -97,6 +98,7 @@ class UserPreset:
     # Ordered fallback chain. Each entry: {"preset_id": int, "model": str}.
     # "model" is optional (empty -> use that preset's default_model).
     fallbacks: List[Dict[str, Any]] = field(default_factory=list)
+    known_models: Optional[List[str]] = None
 
 
 class ApiPresetsController(ApiPresetService):
@@ -187,6 +189,9 @@ class ApiPresetsController(ApiPresetService):
             effective = self._build_effective_preset_dict(identifier)
             from managers.protocol_registry import get_protocol_registry
             protocol = get_protocol_registry().get(effective["protocol_id"])
+            if protocol is None:
+                logger.warning("Model settings migration skipped for unavailable protocol: %s", effective["protocol_id"])
+                continue
             dialect = str(getattr(protocol, "dialect", "") or "openai_chat_completions")
             preset.model_settings = self.model_settings_service.for_preset(effective, dialect, legacy_settings)
             preset.generation_overrides = {}
@@ -576,6 +581,7 @@ class ApiPresetsController(ApiPresetService):
             model_settings=raw.get("model_settings"),
             openrouter_routing=dict(orr),
             fallbacks=fallbacks,
+            known_models=normalize_catalog_models(raw['known_models']) if isinstance(raw.get('known_models'), list) else None,
         )
 
     def _load_presets_only(self):
@@ -848,7 +854,7 @@ class ApiPresetsController(ApiPresetService):
             "url_tpl": tpl.url_tpl if tpl else "",
             "default_model": p.default_model or (tpl.default_model if tpl else ""),
             "preferred_model": p.preferred_model if p.preferred_model is not None else (tpl.preferred_model if tpl else ""),
-            "known_models": self._known_models_for_template(tpl),
+            "known_models": list(p.known_models) if p.known_models is not None else self._known_models_for_template(tpl),
             "test_url": resolve_test_url(asdict(tpl) if tpl else {}, p.url, p.test_url),
             "filter_fn": tpl.filter_fn if tpl else "",
             "documentation_url": tpl.documentation_url if tpl else "",
@@ -1009,6 +1015,8 @@ class ApiPresetsController(ApiPresetService):
         template = self.templates.get(base) if base is not None else None
         protocol_id = (template.protocol_id if template else data.get("protocol_id")) or "openai_compatible_default"
         protocol = get_protocol_registry().get(protocol_id)
+        if protocol is None:
+            raise ValueError(f"API protocol is unavailable: {protocol_id}")
         dialect = str(getattr(protocol, "dialect", "") or "openai_chat_completions")
         existing = self.presets.get(preset_id)
         document = data.get("model_settings", existing.model_settings if existing else None)
@@ -1025,6 +1033,10 @@ class ApiPresetsController(ApiPresetService):
         _, document = self.model_settings_service.resolve(document, dialect)
         from copy import deepcopy
         up = deepcopy(existing) if existing else UserPreset(id=preset_id, name=name)
+        if 'known_models' in data:
+            up.known_models = None if data['known_models'] is None else normalize_catalog_models(data['known_models'])
+        elif existing and (existing.base != base or (base is None and existing.protocol_id != protocol_id)):
+            up.known_models = None
         up.model_settings = document
         up.name = name
         up.base = base
@@ -1315,6 +1327,8 @@ class ApiPresetsController(ApiPresetService):
     def _sync_account_action(self, preset_id: int, protocol_id: str, action: str, account_id: str) -> None:
         try:
             result = run_account_action(protocol_id, action, account_id)
+            if result.get('success') and 'models' in result:
+                self._update_preset_models(preset_id, result['models'])
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {'id': preset_id or None, **result})
         except Exception as exc:
             self.event_bus.emit(Events.ApiPresets.TEST_FAILED, {
@@ -1609,6 +1623,8 @@ class ApiPresetsController(ApiPresetService):
             else:
                 message = http_status_message(status, translate=_)
 
+            if success:
+                self._update_preset_models(preset_id, models)
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
                 "success": bool(success),
@@ -1644,12 +1660,25 @@ class ApiPresetsController(ApiPresetService):
             })
 
     def _on_update_preset_models(self, event: Event):
-        preset_id = (event.data or {}).get("id")
-        new_models = (event.data or {}).get("models", [])
-        if not new_models:
+        return self._update_preset_models((event.data or {}).get('id'), (event.data or {}).get('models'))
+
+    def _update_preset_models(self, preset_id, models) -> bool:
+        try:
+            preset_id = int(preset_id)
+        except (TypeError, ValueError):
             return False
-        logger.info(f"Received model update request for preset {preset_id}, but not saving to template (feature disabled)")
-        return False
+        preset = self.presets.get(preset_id)
+        if preset is None or not isinstance(models, list):
+            return False
+        normalized = normalize_catalog_models(models)
+        previous = preset.known_models
+        if previous == normalized:
+            return True
+        preset.known_models = normalized
+        if not self._save_presets():
+            preset.known_models = previous
+            return False
+        return True
 
     def _on_save_preset_state(self, event: Event):
         preset_id = (event.data or {}).get("id")
@@ -1678,7 +1707,10 @@ class ApiPresetsController(ApiPresetService):
             if "test_url" in state and (not template or template.test_url_editable):
                 up.test_url = str(state["test_url"] or "").strip()
             if "protocol_id" in state and not up.base:
-                up.protocol_id = str(state["protocol_id"] or "").strip()
+                protocol_id = str(state["protocol_id"] or "").strip()
+                if up.protocol_id != protocol_id:
+                    up.known_models = None
+                up.protocol_id = protocol_id
             if "reserve_keys" in state:
                 rk = state.get("reserve_keys") or []
                 if isinstance(rk, list):

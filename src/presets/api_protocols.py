@@ -6,7 +6,6 @@ class Dialects:
     OPENAI_CHAT_COMPLETIONS = "openai_chat_completions"
     OPENAI_RESPONSES = "openai_responses"
     GEMINI_GENERATE_CONTENT = "gemini_generate_content"
-    G4F = "g4f"
 
 
 API_PROTOCOLS_DATA = [
@@ -151,16 +150,5 @@ API_PROTOCOLS_DATA = [
         "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [],
     },
-    {
-        "id": "g4f_default",
-        "settings_schema_id": "g4f",
-        "name": "GPT4Free",
-        "display_name": "GPT4Free",
-        "dialect": Dialects.G4F,
-        "provider": "g4f",
-        "auth": {"mode": "none"},
-        "headers": {},
-        "capabilities": {"tools_native": False, "streaming": False, "streaming_with_tools": False, "structured_output": False},
-        "transforms": [],
-    },
+
 ]

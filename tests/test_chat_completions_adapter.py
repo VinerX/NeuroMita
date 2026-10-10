@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from handlers.llm_providers.base import LLMRequest, StreamChannel
 from handlers.llm_providers.common_provider import CommonProvider
 from handlers.llm_providers.errors import LLMProviderError
-from handlers.llm_providers.openai_compatible import OpenAICompatibleProvider
+from handlers.llm_providers.protocols.registry import adapter_for
 
 
 def request(**kwargs):
@@ -20,8 +20,8 @@ def request(**kwargs):
                       provider_name="common", **kwargs)
 
 
-@pytest.mark.parametrize("builder", [False, True])
-def test_chat_encoder_projects_responses_history_without_mutating_it(builder):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_chat_encoder_projects_responses_history_without_mutating_it(scoped):
     from handlers.llm_providers.protocols.chat_completions import ChatCompletionsAdapter
     messages = [{"role": "assistant", "content": None, "time": "local",
         "responses_output": [{"type": "reasoning", "encrypted_content": "opaque"}],
@@ -30,63 +30,46 @@ def test_chat_encoder_projects_responses_history_without_mutating_it(builder):
             "function": {"name": "calculator", "arguments": "{}"},
             "extra_content": {"google": {"thought_signature": "signature"}}}]},
         {"role": "tool", "tool_call_id": "call1", "content": "2"}]
+    if scoped:
+        messages[0]["protocol_history"] = {"openai_responses": {"output": messages[0].pop("responses_output")}}
     original = copy.deepcopy(messages)
     req = request()
     req.messages = messages
-    adapter = ChatCompletionsAdapter(payload_builder=(lambda _: {"model": "test", "messages": messages}) if builder else None)
+    adapter = ChatCompletionsAdapter()
     encoded = adapter.encode(req, wire_stream=False)["messages"]
     assert encoded[0] == {key: value for key, value in messages[0].items()
-                          if key not in {"time", "responses_output", "responses_reasoning_items"}}
+                          if key not in {"time", "responses_output", "responses_reasoning_items", "protocol_history"}}
     assert encoded[1] == messages[1]
     assert messages == original
     encoded[0]["tool_calls"][0]["function"]["name"] = "changed"
     assert messages == original
 
 
-def sdk_object(value):
-    if isinstance(value, dict):
-        return SimpleNamespace(**{key: sdk_object(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return [sdk_object(item) for item in value]
-    return value
 
 
-class SDK(OpenAICompatibleProvider):
-    name = "sdk-test"
-
-    def is_applicable(self, req):
-        return True
-
-    def _get_client(self, req):
-        def create(**kwargs):
-            self.captured = kwargs
-            return iter(self.result) if req.stream else self.result
-        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
-                               close=lambda: None)
 
 
 def generate(transport, payload, req):
-    if transport == "sdk":
-        provider = SDK(http_transport=SimpleNamespace())
-        provider.result = [sdk_object(item) for item in payload] if req.stream else sdk_object(payload)
-    else:
-        def handle(_):
-            if req.stream:
-                body = "".join(f"data: {json.dumps(item)}\n\n" for item in payload) + "data: [DONE]\n\n"
-                return httpx.Response(200, text=body)
-            return httpx.Response(200, json=payload)
-        from handlers.llm_providers.http_transport import LLMHttpClient
-        client = LLMHttpClient(client_factory=lambda _service_id, _http2: httpx.Client(transport=httpx.MockTransport(handle)))
-        provider = CommonProvider(http_transport=client)
+    def handle(_):
+        if req.wire_stream:
+            body = "".join(f"data: {json.dumps(item)}\n\n" for item in payload) + "data: [DONE]\n\n"
+            return httpx.Response(200, text=body)
+        return httpx.Response(200, json=payload)
+    from handlers.llm_providers.http_transport import LLMHttpClient
+    from managers.provider_manager import ProviderManager
+    client = LLMHttpClient(client_factory=lambda *_: httpx.Client(transport=httpx.MockTransport(handle)))
+    provider = CommonProvider(http_transport=client)
+    manager = ProviderManager.__new__(ProviderManager)
+    manager._providers, manager._unavailable, manager.http_transport = [provider], {}, client
+    if transport == "openai_alias":
+        req.provider_name = "openai"
     try:
-        return provider.generate(req)
+        return manager.generate(req)
     finally:
-        provider.close()
-        if transport == "http":
-            client.close()
+        manager.close()
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_tool_only_completion_returns_normalized_calls_and_reasoning(transport):
     payload = {"model": "actual", "choices": [{"message": {"content": None,
         "reasoning": "considered", "tool_calls": [
@@ -106,7 +89,7 @@ def test_tool_only_completion_returns_normalized_calls_and_reasoning(transport):
     assert result.usage.cached_prompt_tokens == 4
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_interleaved_stream_tools_survive_usage_tail(transport):
     events = []
     chunks = [
@@ -133,7 +116,7 @@ def test_interleaved_stream_tools_survive_usage_tail(transport):
     assert len([e for e in events if e.type.value == "tool_call_completed"]) == 2
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 @pytest.mark.parametrize("message,finish", [({"content": None, "refusal": "Denied"}, "stop"),
                                           ({"content": "partial"}, "length"),
                                           ({"content": "partial"}, "content_filter"),
@@ -144,7 +127,7 @@ def test_refusal_truncation_and_empty_completions_are_errors(transport, message,
     assert result.tool_calls == []
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 @pytest.mark.parametrize("terminal", [
     {"error": {"message": "failed"}},
     {"choices": [{"delta": {"refusal": "Denied"}, "finish_reason": "stop"}]},
@@ -155,7 +138,7 @@ def test_stream_terminal_failure_never_returns_partial_success(transport, termin
         generate(transport, [{"choices": [{"delta": {"content": "partial"}}]}, terminal], request(stream=True))
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_malformed_tool_arguments_are_not_executable(transport):
     payload = {"choices": [{"message": {"tool_calls": [
         {"id": "call_a", "function": {"name": "clock", "arguments": "[1]"}}
@@ -164,7 +147,7 @@ def test_malformed_tool_arguments_are_not_executable(transport):
         generate(transport, payload, request())
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_text_reasoning_and_multimodal_content_decode_identically(transport):
     payload = {"choices": [{"message": {"content": [{"type": "text", "text": "Hello "},
         {"type": "text", "text": "world"}], "reasoning_content": "private"}, "finish_reason": "stop"}]}
@@ -191,12 +174,11 @@ def test_adapter_wire_stream_is_independent_and_preserves_native_parameters():
     assert "stream_options" not in ChatCompletionsAdapter().encode(req, wire_stream=False)
 
 
-def test_sdk_preserves_unknown_native_parameters_in_extra_body():
-    sdk = SDK(http_transport=SimpleNamespace())
-    sdk.result = sdk_object({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
-    sdk.generate(request(native_parameters={"unknown_extension": {"enabled": True}}))
-    assert sdk.captured["extra_body"] == {"unknown_extension": {"enabled": True}}
-    assert "unknown_extension" not in sdk.captured
+def test_encoder_preserves_unknown_native_parameters_as_wire_fields():
+    payload = adapter_for("openai_chat_completions").encode(
+        request(native_parameters={"unknown_extension": {"enabled": True}}), wire_stream=False)
+    assert payload["unknown_extension"] == {"enabled": True}
+    assert "extra_body" not in payload
 
 
 @pytest.mark.parametrize("mode", ["native", "schema", "emulated"])
@@ -212,13 +194,13 @@ def test_canonical_flat_tools_are_wrapped_only_in_native_mode(mode):
     assert req.tools_payload == [declaration]
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_stream_without_terminal_finish_is_not_partial_success(transport):
     with pytest.raises(LLMProviderError):
         generate(transport, [{"choices": [{"delta": {"content": "partial"}}]}], request(stream=True))
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_stream_malformed_tool_arguments_never_complete(transport):
     events = []
     with pytest.raises(LLMProviderError):
@@ -250,15 +232,12 @@ def test_custom_schema_fields_are_declared_in_chat_response_format():
     assert custom["additionalProperties"] is False
 
 
-def test_real_sdk_model_keeps_extension_reasoning_and_usage_details():
-    from openai.types.chat import ChatCompletion
-    sdk = SDK(http_transport=SimpleNamespace())
-    sdk.result = ChatCompletion.model_validate({"id": "completion", "object": "chat.completion",
-        "created": 1, "model": "actual", "choices": [{"index": 0, "finish_reason": "stop",
+def test_json_response_keeps_extension_reasoning_and_usage_details():
+    payload = {"model": "actual", "choices": [{"index": 0, "finish_reason": "stop",
         "message": {"role": "assistant", "content": "visible", "reasoning_content": "private"}}],
         "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8,
-                  "completion_tokens_details": {"reasoning_tokens": 2}}})
-    result = sdk.generate(request())
+                  "completion_tokens_details": {"reasoning_tokens": 2}}}
+    result = generate("http", payload, request())
     assert result.text == "visible"
     assert result.reasoning == "private"
     assert result.usage.reasoning_tokens == 2
@@ -277,11 +256,10 @@ def test_forced_wire_stream_without_ui_streaming_emits_no_deltas():
     assert not deltas
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 def test_provider_encoder_accepts_canonical_native_tools(transport):
-    provider = CommonProvider(http_transport=SimpleNamespace()) if transport == "http" else SDK(http_transport=SimpleNamespace())
     req = request(tools_on=True, tools_payload=[{"name": "clock", "parameters": {"type": "object"}}])
-    payload = provider._protocol_adapter().encode(req, wire_stream=False)
+    payload = adapter_for("openai_chat_completions").encode(req, wire_stream=False)
     assert payload["tools"] == [{"type": "function", "function": {"name": "clock", "parameters": {"type": "object"}}}]
 
 
@@ -303,7 +281,7 @@ def test_disabled_structured_output_fallback_sends_only_strict_request():
         client.close()
 
 
-@pytest.mark.parametrize("transport", ["http", "sdk"])
+@pytest.mark.parametrize("transport", ["http", "openai_alias"])
 @pytest.mark.parametrize("signature_chunk", [0, 1])
 def test_stream_tool_extensions_preserve_google_thought_signature(transport, signature_chunk):
     deltas = [
@@ -330,6 +308,5 @@ def test_stream_tool_extensions_preserve_google_thought_signature(transport, sig
     followup = request()
     followup.messages = [result.raw["choices"][0]["message"],
                          {"role": "tool", "tool_call_id": "google_call", "content": "12:00"}]
-    provider = CommonProvider(http_transport=SimpleNamespace()) if transport == "http" else SDK(http_transport=SimpleNamespace())
-    encoded = provider._protocol_adapter().encode(followup, wire_stream=False)
+    encoded = adapter_for("openai_chat_completions").encode(followup, wire_stream=False)
     assert encoded["messages"][0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "opaque-signature"

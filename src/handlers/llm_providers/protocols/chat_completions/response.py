@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -9,31 +10,6 @@ from ...errors import build_provider_error
 from .tools import decode_tool_calls
 
 
-def sdk_payload(value: Any) -> Any:
-    """Convert SDK models at the transport boundary, including extension fields."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {key: sdk_payload(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [sdk_payload(item) for item in value]
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        payload = dump()
-    else:
-        payload = {key: item for key, item in vars(value).items() if not key.startswith("_")}
-        if not payload:
-            payload = {key: getattr(value, key) for key in (
-                "choices", "message", "delta", "content", "refusal", "reasoning_content", "reasoning",
-                "model", "usage", "finish_reason", "tool_calls", "function_call", "function",
-                "name", "arguments", "id", "index", "type", "text", "prompt_tokens",
-                "completion_tokens", "total_tokens", "prompt_tokens_details", "completion_tokens_details",
-                "cached_tokens", "reasoning_tokens", "cost"
-            ) if hasattr(value, key)}
-    extra = getattr(value, "model_extra", None)
-    if isinstance(extra, dict):
-        payload = {**extra, **payload}
-    return sdk_payload(payload)
 
 
 def content_text(value: Any) -> str:
@@ -52,6 +28,13 @@ def content_text(value: Any) -> str:
             parts.append(text)
         return "".join(parts)
     raise ValueError("Provider completion content must be text or text parts.")
+
+
+def history_for_message(message: dict) -> dict:
+    calls = deepcopy(message.get('tool_calls') or [])
+    for call in calls:
+        call.pop('index', None)
+    return {'openai_chat_completions': {'tool_calls': calls}} if calls else {}
 
 
 def reasoning_text(message: dict) -> str:
@@ -119,4 +102,5 @@ def decode_response(req: LLMRequest, payload: dict, *, provider: str = "") -> LL
                        usage=extract_usage(req, payload), model=payload.get("model") or req.model,
                        provider_name=req.provider_name or provider,
                        provider_display_name=req.provider_display_name or req.provider_name or provider,
-                       finish_reason=finish, error_message=error, raw=payload)
+                       finish_reason=finish, error_message=error, raw=payload,
+                       protocol_history=history_for_message(message) if not error else {})

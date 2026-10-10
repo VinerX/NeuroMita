@@ -80,10 +80,6 @@ class ManagedHttpClient:
         except httpx.HTTPStatusError as exc:
             raise classify_network_error(self.service_id, exc) from exc
 
-    def client_for_sdk(self) -> httpx.Client:
-        self._ensure_open()
-        return self._registry._client(self.service_id)
-
     def close(self) -> None:
         if self._closed:
             return

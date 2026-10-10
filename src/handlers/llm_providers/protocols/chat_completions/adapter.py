@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 
 from ...base import LLMRequest, LLMResponse
 from .request import encode_request
@@ -11,15 +11,13 @@ from .stream import consume_stream
 class ChatCompletionsAdapter:
     dialect_id = "openai_chat_completions"
 
-    def __init__(self, *, provider_name: str = "", payload_builder: Callable | None = None,
+    def __init__(self, *, provider_name: str = "",
                  supports_stream_usage: bool = False) -> None:
         self.provider_name = provider_name
-        self.payload_builder = payload_builder
         self.supports_stream_usage = supports_stream_usage
 
     def encode(self, req: LLMRequest, *, wire_stream: bool) -> dict:
-        payload = self.payload_builder(req) if self.payload_builder else None
-        return encode_request(req, wire_stream=wire_stream, payload=payload,
+        return encode_request(req, wire_stream=wire_stream,
                               supports_stream_usage=self.supports_stream_usage)
 
     def decode(self, req: LLMRequest, payload: dict) -> LLMResponse:

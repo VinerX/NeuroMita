@@ -114,6 +114,26 @@ class CharacterManager:
     def get_all_characters(self) -> List[str]:
         return list(self._definitions)
 
+    def get_character_stats(self, char_id: str) -> dict[str, float]:
+        """Read runtime values if loaded, otherwise only the persisted statistics."""
+        defaults = {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+        key = str(char_id or "").strip()
+        with self._lock:
+            character = self.characters.get(key)
+            if character is not None:
+                return character.get_stats_dict()
+            definition = self._definitions.get(key)
+        if definition is None:
+            return defaults
+        values = self.resources.history_for(key, definition.storage_name).load_variables(defaults)
+        result = dict(defaults)
+        for name, default in defaults.items():
+            try:
+                result[name] = float(values.get(name, default))
+            except (TypeError, ValueError):
+                pass
+        return result
+
     def get_display_name(self, char_id: str) -> str:
         definition = self._definitions.get(str(char_id or "").strip())
         return definition.display_name if definition is not None else str(char_id or "")

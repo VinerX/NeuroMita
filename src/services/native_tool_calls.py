@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 
 from handlers.llm_providers.base import ToolResult
+from handlers.llm_providers.protocols.history import normalize_history_message, normalize_tool_call_history
 from schemas.structured_response import StructuredResponse
 from services.structured_response_capabilities import StructuredResponseCapabilities
 
@@ -97,21 +98,11 @@ def bridge_native_tool_response(response, req, *, model_cls=StructuredResponse):
         data = normalize_sparse_response(data, model_cls, profile)
     data['tool_call'] = {'name': call.name, 'args': deepcopy(call.arguments)}
     raw = dict(response.raw or {})
-    raw['native_tool_history'] = deepcopy(raw.get('output') or [])
     raw['native_tool_call'] = {
         'name': call.name, 'arguments': deepcopy(call.arguments), 'id': call.id,
         'assistant_text': text or None,
-        'responses_output': deepcopy(raw['native_tool_history']),
+        'protocol_history': deepcopy(response.protocol_history),
     }
-    choices = raw.get('choices') or []
-    message = choices[0].get('message') or {} if choices and isinstance(choices[0], dict) else {}
-    originals = message.get('tool_calls') or raw.get('tool_calls') or []
-    for original in originals:
-        if isinstance(original, dict) and original.get('id') == call.id:
-            preserved = deepcopy(original)
-            preserved.pop('index', None)
-            raw['native_tool_call']['chat_tool_call'] = preserved
-            break
     response.raw = raw
     response.text = json.dumps(data, ensure_ascii=False)
     return response
@@ -122,10 +113,9 @@ def native_tool_followup_messages(call, result):
     assistant = {'role': 'assistant', 'content': call.get('assistant_text'), 'tool_calls': [{
         'id': call['id'], 'type': 'function', 'function': {
             'name': call['name'], 'arguments': json.dumps(call['arguments'], ensure_ascii=False)}}]}
-    if call.get('chat_tool_call'):
-        assistant['tool_calls'] = [deepcopy(call['chat_tool_call'])]
-    if call.get('responses_output'):
-        assistant['responses_output'] = deepcopy(call['responses_output'])
+    history = normalize_tool_call_history(call)
+    if history:
+        assistant['protocol_history'] = history
     return [assistant, {'role': 'tool', 'tool_call_id': output.id, 'content': output.content}]
 
 
@@ -152,6 +142,7 @@ def persisted_native_tool_messages(structured_data):
     if not isinstance(messages, list) or len(messages) != 2 or not all(isinstance(message, dict) for message in messages):
         return []
     assistant, result = messages
+    assistant = normalize_history_message(assistant)
     calls = assistant.get('tool_calls')
     if (assistant.get('role') != 'assistant' or result.get('role') != 'tool'
             or not isinstance(calls, list) or len(calls) != 1 or not isinstance(calls[0], dict)
@@ -162,5 +153,5 @@ def persisted_native_tool_messages(structured_data):
     if not isinstance(function, dict) or not function.get('name'):
         return []
     return [deepcopy({key: value for key, value in assistant.items()
-                      if key in {'role', 'content', 'tool_calls', 'responses_output'}}),
+                      if key in {'role', 'content', 'tool_calls', 'protocol_history'}}),
             {'role': 'tool', 'tool_call_id': result['tool_call_id'], 'content': result['content']}]

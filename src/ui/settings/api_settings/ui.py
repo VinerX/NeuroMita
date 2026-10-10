@@ -304,6 +304,7 @@ def build_api_settings_ui(self, parent_layout):
     self.key_help_label = _link_label()
     self.api_model_row.heading.addWidget(self.model_help_label)
     self.models_button = _button("Получить модели", "Load models", "fa5s.sync-alt", "ApiModelsButton")
+    self.models_button.setEnabled(False)
     self.models_button.hide()
     self.api_key_row.heading.addWidget(self.key_help_label)
     self.key_visibility_button = QToolButton()

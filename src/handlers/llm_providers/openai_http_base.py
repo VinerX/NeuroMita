@@ -4,7 +4,7 @@ from core.error_utils import format_exception
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -18,57 +18,9 @@ from handlers.llm_providers.base import (
     check_request_cancelled,
 )
 from handlers.llm_providers.errors import build_provider_error, build_stream_error, coerce_provider_error
-from handlers.llm_providers.message_transforms import trailing_system_to_user_prefix
-from utils.openrouter_routing import (
-    annotate_openrouter_prompt_cache,
-    normalize_openrouter_routing,
-)
 from handlers.llm_providers.streaming import iter_sse_data, track_response_body
-from handlers.llm_providers.protocols.chat_completions import ChatCompletionsAdapter
-from handlers.llm_providers.protocols.chat_completions.request import apply_response_format
-from handlers.llm_providers.protocols.chat_completions.response import extract_usage
-
-# Уровни reasoning_effort, которые принимает LM Studio / llama.cpp.
-# "none" выставляется отдельно — это выключение, а не уровень.
-REASONING_EFFORT_LEVELS = ("low", "medium", "high")
-
-
-def _next_response_format_fallback(payload: Dict[str, Any], error_message: str):
-    """Return the next narrower response-format attempt for compatible APIs."""
-    message = str(error_message or "").lower()
-    explicit_format_error = any(
-        signal in message
-        for signal in (
-            "response_format",
-            "response_schema",
-            "json_schema",
-            "json_object",
-        )
-    )
-    unsupported_terms = ("unsupported", "not supported", "does not support", "not allowed")
-    schema_error = (
-        any(signal in message for signal in ("schema", "properties", "structured"))
-        and any(term in message for term in unsupported_terms)
-    )
-    generation_schema_error = (
-        "generation_config" in message
-        and any(signal in message for signal in ("schema", "properties"))
-    )
-    if not (explicit_format_error or schema_error or generation_schema_error):
-        return None
-
-    response_format = payload.get("response_format")
-    if not isinstance(response_format, dict):
-        return None
-    mode = response_format.get("type")
-    if mode == "json_schema":
-        return {"type": "json_object"}
-    if mode == "json_object":
-        return {}
-    if isinstance(response_format.get("json_schema"), dict):
-        return {"type": "json_object"}
-    return None
-
+from handlers.llm_providers.protocols.registry import adapter_for
+from handlers.llm_providers.protocols.chat_completions.request import fallback_payload
 
 class OpenAIHTTPProviderBase(BaseProvider):
     supports_tools_native = True
@@ -76,12 +28,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
     supports_streaming_with_tools = False
 
     tools_dialect_id: str = "openai"
-
-    def _supports_tools_for_req(self, req: LLMRequest) -> bool:
-        caps = req.capabilities or {}
-        if "tools_native" in caps:
-            return bool(caps.get("tools_native"))
-        return bool(self.supports_tools_native)
 
     def _headers(self, req: LLMRequest) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -108,113 +54,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         text = (text or "").strip()
         return text[:limit]
-
-    def _preprocess_messages(self, req: LLMRequest) -> List[Dict[str, Any]]:
-        allowed_keys = {
-            "role",
-            "content",
-            "name",
-            "tool_calls",
-            "tool_call_id",
-            "function_call",
-        }
-
-        cleaned: List[Dict[str, Any]] = []
-        for m in (req.messages or []):
-            if not isinstance(m, dict):
-                continue
-            cleaned.append({k: v for k, v in m.items() if k in allowed_keys})
-
-        return cleaned
-
-    def _normalize_messages(self, req: LLMRequest, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return messages
-
-    def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
-        u = unified or {}
-        m = (model_to_use or "").lower()
-        out: Dict[str, Any] = {}
-
-        for k in ("temperature", "max_tokens", "presence_penalty", "frequency_penalty", "top_p"):
-            if k in u:
-                out[k] = u[k]
-
-        if "top_k" in u and "deepseek" in m:
-            out["top_k"] = u["top_k"]
-
-        if "logprobs" in u:
-            lp = u["logprobs"]
-            out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
-
-        # Reasoning/thinking is serialized separately in _apply_reasoning, driven by
-        # the protocol's declared capabilities (not by the model name).
-        return out
-
-    @staticmethod
-    def _apply_reasoning(payload: Dict[str, Any], req: LLMRequest) -> None:
-        """Serialize the reasoning/thinking toggle into the request payload.
-
-        The transport is declared by the protocol via capabilities["reasoning_control"]
-        rather than guessed from the model name:
-          - "openrouter": OpenRouter's unified `reasoning` map (safe to send to any
-            OpenRouter model — unsupported models normalize it away).
-          - "deepseek": the native DeepSeek `thinking` object, which defaults to
-            "enabled" and must be explicitly disabled to skip reasoning.
-          - "reasoning_effort": OpenAI-style `reasoning_effort` string, where "none"
-            disables reasoning. Used by LM Studio / llama.cpp: local reasoning models
-            (Gemma 4, Qwen3) think by default, and chat_template_kwargs does not
-            reach the template there — reasoning_effort is the only switch that works.
-          - otherwise (legacy/unknown): emit nothing. Generic OpenAI-compatible
-            providers (e.g. Mistral) reject unknown `thinking` members with 4xx,
-            so thinking is strictly opt-in via a declared reasoning_control.
-
-        enable_thinking is tri-state: absent -> leave the provider default untouched;
-        True -> enable; False -> disable.
-        """
-        extra = req.extra or {}
-        if "enable_thinking" not in extra:
-            return
-
-        enabled = bool(extra.get("enable_thinking"))
-        try:
-            budget = int(extra.get("thinking_budget") or extra.get("gemini_thinking_budget") or 0)
-        except Exception:
-            budget = 0
-
-        transport = str((req.capabilities or {}).get("reasoning_control") or "")
-
-        if transport == "openrouter":
-            reasoning: Dict[str, Any] = {"enabled": enabled}
-            effort = str(extra.get("reasoning_effort") or "").strip().lower()
-            model_profile = (req.capabilities or {}).get("model_profile") or {}
-            thinking_profile = model_profile.get("thinking") if isinstance(model_profile, dict) else {}
-            allowed_efforts = {
-                str(value).strip().lower()
-                for value in (thinking_profile.get("allowed_levels") or [])
-                if str(value).strip()
-            } if isinstance(thinking_profile, dict) else set()
-            if enabled and effort and (not allowed_efforts or effort in allowed_efforts):
-                reasoning["effort"] = effort
-            elif enabled and budget > 0:
-                reasoning["max_tokens"] = budget
-            payload["reasoning"] = reasoning
-        elif transport == "deepseek":
-            thinking: Dict[str, Any] = {"type": "enabled" if enabled else "disabled"}
-            if enabled and budget > 0:
-                thinking["budget_tokens"] = budget
-            payload["thinking"] = thinking
-        elif transport == "reasoning_effort":
-            if not enabled:
-                payload["reasoning_effort"] = "none"
-            else:
-                effort = str(extra.get("reasoning_effort") or "").strip().lower()
-                # Уровень шлём только если пользователь его явно выбрал. Без уровня
-                # не отправляем ничего: reasoning-модели LM Studio / llama.cpp
-                # (Gemma 4, Qwen3) думают по умолчанию, а посланный "medium"/"low"
-                # на модели, знающей лишь on/off (напр. gemma-4-12b-qat), даёт WARN
-                # и откат на 'on' — тот же результат, но с шумом в логах.
-                if effort in REASONING_EFFORT_LEVELS:
-                    payload["reasoning_effort"] = effort
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}
@@ -245,46 +84,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return url
 
-    def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if req.protocol_id == "openrouter_default":
-            if bool((req.extra or {}).get("openrouter_tail_system_to_user", True)):
-                messages = trailing_system_to_user_prefix(messages, tag="[SYSTEM INFO]")
-            messages = annotate_openrouter_prompt_cache(messages, model_to_use)
-        payload: Dict[str, Any] = {
-            "model": model_to_use,
-            "messages": messages,
-        }
-        if req.stream and self.should_request_stream_usage(req):
-            payload["stream_options"] = {"include_usage": True}
-        if req.native_parameters is None:
-            payload.update(self._map_unified_params(req.extra or {}, model_to_use))
-            self._apply_reasoning(payload, req)
-        else:
-            from copy import deepcopy
-            payload.update(deepcopy(req.native_parameters))
-
-        if req.protocol_id == "openrouter_default":
-            routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
-            if routing:
-                payload["provider"] = routing
-            session_id = str((req.extra or {}).get("openrouter_session_id") or "").strip()
-            if session_id:
-                payload["session_id"] = session_id
-
-        apply_response_format(req, payload)
-
-        return payload
-
     def _request(self, request_url: str, req: LLMRequest, payload: Dict[str, Any]) -> httpx.Response:
         headers = self._headers(req)
-        if req.stream:
-            payload["stream"] = True
         return self.http_transport.post_json(
             req,
             request_url,
             headers=headers,
             payload=payload,
-            stream=req.stream,
+            stream=bool(payload["stream"]),
         )
 
     def generate(self, req: LLMRequest) -> LLMResponse:
@@ -302,8 +109,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
             raise build_provider_error(self.name, provider_message="api_url is empty.", url=req.api_url)
 
         request_url = self._resolve_request_url(req)
-        adapter = self._protocol_adapter()
-        payload = adapter.encode(req, wire_stream=req.stream)
+        adapter = adapter_for("openai_chat_completions", provider_name=self.name,
+                              supports_stream_usage=self.should_request_stream_usage(req))
+        payload = adapter.encode(req, wire_stream=req.wire_stream)
 
         try:
             resp = self._request(request_url, req, payload)
@@ -321,36 +129,32 @@ class OpenAIHTTPProviderBase(BaseProvider):
             and self._supports_structured_output(req)
             and (req.capabilities or {}).get("structured_output_fallback", True)
         ):
-            if req.stream:
+            if req.wire_stream:
                 resp.read()
             initial_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
             fallback_count = 1 if initial_mode == "json_object" else 0
-            while resp.status_code == 400 and fallback_count < 2 and "response_format" in payload:
-                if req.stream:
+            while resp.status_code == 400 and fallback_count < 2:
+                if req.wire_stream:
                     resp.read()
                 try:
                     err_body = resp.json()
                 except Exception:
                     err_body = {}
                 err_msg = str(err_body)
-                next_format = _next_response_format_fallback(payload, err_msg)
-                if next_format is None:
+                next_payload = fallback_payload(payload, err_msg)
+                if next_payload is None:
                     break
-                label = next_format.get("type", "no response_format")
                 logger.warning(
-                    f"[{self.name}] response_format rejected by provider, retrying with {label}. "
+                    f"[{self.name}] response format rejected; retrying with a narrower format. "
                     f"Error: {err_msg[:200]}"
                 )
-                if next_format:
-                    payload["response_format"] = next_format
-                else:
-                    payload.pop("response_format", None)
+                payload = next_payload
                 resp.close()
                 resp = self._request(request_url, req, payload)
                 fallback_count += 1
 
         if resp.status_code != 200:
-            if req.stream:
+            if req.wire_stream:
                 resp.read()
             try:
                 err = resp.json()
@@ -372,7 +176,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
             resp.close()
             raise provider_error
 
-        if req.stream:
+        if req.wire_stream:
             return self._handle_stream(resp, request_url, req, req.stream_cb)
 
         try:
@@ -419,13 +223,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return adapter.decode(req, data)
 
-    def _protocol_adapter(self) -> ChatCompletionsAdapter:
-        def payload_builder(req):
-            messages = self._normalize_messages(req, self._preprocess_messages(req))
-            return self._build_payload(req, req.model, messages)
-        return ChatCompletionsAdapter(provider_name=self.name, payload_builder=payload_builder,
-                                      supports_stream_usage=self.supports_stream_usage)
-
     def _handle_stream(
         self,
         resp: httpx.Response,
@@ -447,7 +244,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                         code="stream.invalid_json", url=api_url,
                     ) from e
         try:
-            return self._protocol_adapter().consume_stream(req, chunks())
+            return adapter_for("openai_chat_completions", provider_name=self.name).consume_stream(req, chunks())
         except Exception as e:
             raise coerce_provider_error(self.name, e, url=api_url) from e
         finally:
@@ -455,6 +252,3 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 resp.close()
             except Exception:
                 logger.debug(f"[{self.name}] Failed to close HTTP stream", exc_info=True)
-
-    def _extract_usage(self, data: Any, api_url: str):
-        return extract_usage(LLMRequest(model="", messages=[], api_url=api_url), data) if isinstance(data, dict) else None

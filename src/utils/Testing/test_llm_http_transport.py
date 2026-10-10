@@ -28,8 +28,6 @@ from handlers.llm_providers.http_transport import (
     LLMHttpClient,
     LLMTimeoutPolicy,
 )
-from handlers.llm_providers.openai_provider import OpenAIProvider
-from handlers.llm_providers.openai_compatible import OpenAICompatibleProvider
 from handlers.llm_providers.streaming import (
     LLMStreamEventType,
     StreamAccumulator,
@@ -81,8 +79,10 @@ def test_transport_reuses_registered_service_client():
 
     transport = LLMHttpClient(enable_http2=False, client_factory=factory)
 
-    assert transport.client_for_url("https://example.test") is transport.client_for_url("https://other.test")
-    assert transport.client_for_url("http://localhost:11434") is transport.client_for_url("https://example.test")
+    for url in ("https://example.test", "https://other.test", "http://localhost:11434"):
+        response = transport.get(url)
+        assert response.json() == {"ok": True}
+        response.close()
     assert created == [("llm", False)]
     transport.close()
 
@@ -97,13 +97,16 @@ def test_transport_client_is_created_with_shared_connection_limits(monkeypatch):
         def close(self):
             return None
 
+        def request(self, method, url, **kwargs):
+            return httpx.Response(200, request=httpx.Request(method, url))
+
     transport = LLMHttpClient(
         enable_http2=False,
         client_factory=lambda _service_id, _http2: DummyClient(),
     )
 
-    transport.client_for_url("http://127.0.0.1:11434/v1")
-    transport.client_for_url("https://example.test/v1")
+    transport.get("http://127.0.0.1:11434/v1").close()
+    transport.get("https://example.test/v1").close()
 
     assert len(created) == 1
     transport.close()
@@ -555,30 +558,6 @@ def test_gemini_http_error_preserves_retry_after_header():
     transport.close()
 
 
-def test_openai_sdk_adapter_reuses_httpx_pool_and_disables_hidden_retries():
-    transport = LLMHttpClient(
-        enable_http2=False,
-        client_factory=lambda _service_id, _http2: httpx.Client(
-            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}))
-        ),
-    )
-    provider = OpenAIProvider(http_transport=transport)
-    req = LLMRequest(
-        model="gpt-test",
-        messages=[],
-        api_key="key",
-        api_url="https://api.openai.test/v1",
-        provider_name="openai",
-    )
-
-    first = provider._get_client(req)
-    second = provider._get_client(req)
-
-    assert first.max_retries == 0
-    assert second.max_retries == 0
-    assert first._client is second._client
-    provider.close()
-    transport.close()
 
 
 def test_common_provider_falls_back_from_schema_to_json_object_then_plain_json():
@@ -659,101 +638,28 @@ def test_common_provider_stops_at_plain_json_when_each_format_is_rejected():
     transport.close()
 
 
-class _CapturingSdkProvider(OpenAICompatibleProvider):
-    name = "capturing-sdk"
-    supports_stream_usage = True
-
-    def __init__(self, captured):
-        super().__init__()
-        self._captured = captured
-
-    def is_applicable(self, req):
-        return True
-
-    def _get_client(self, req):
-        captured = self._captured
-
-        class Completions:
-            @staticmethod
-            def create(**kwargs):
-                captured.update(kwargs)
-                return iter(())
-
-        class Chat:
-            completions = Completions()
-
-        class Client:
-            chat = Chat()
-
-            @staticmethod
-            def close():
-                return None
-
-        return Client()
 
 
-def test_stream_usage_is_capability_driven_for_http_and_sdk_adapters():
-    common = CommonProvider()
+def test_stream_usage_is_capability_driven_for_chat_adapter():
+    from handlers.llm_providers.protocols.registry import adapter_for
     req = _request()
-    req.stream = True
     req.capabilities["supports_stream_usage"] = True
-
-    payload = common._build_payload(req, req.model, req.messages)
-    assert payload["stream_options"] == {"include_usage": True}
-
+    adapter = adapter_for("openai_chat_completions")
+    assert adapter.encode(req, wire_stream=True)["stream_options"] == {"include_usage": True}
     req.capabilities["supports_stream_usage"] = False
-    assert "stream_options" not in common._build_payload(req, req.model, req.messages)
-    common.close()
-
-    captured = {}
-    sdk = _CapturingSdkProvider(captured)
-    sdk_req = _request()
-    sdk_req.stream = True
-    sdk.generate(sdk_req)
-    assert captured["stream_options"] == {"include_usage": True}
-    sdk.close()
+    assert "stream_options" not in adapter.encode(req, wire_stream=True)
 
 
-def test_sdk_stream_error_never_returns_partial_success():
-    class Delta:
-        content = "hello"
-        reasoning_content = ""
-        model_extra = {}
-        tool_calls = []
-
-    class Choice:
-        finish_reason = None
-        delta = Delta()
-
-    class TextChunk:
-        model = "model"
-        usage = None
-        choices = [Choice()]
-
-        @staticmethod
-        def model_dump():
-            return {"choices": [{"delta": {"content": "hello"}}]}
-
-    class ErrorChunk:
-        model = "model"
-        usage = None
-        choices = []
-
-        @staticmethod
-        def model_dump():
-            return {"error": {"message": "upstream failed"}}
-
-    provider = _CapturingSdkProvider({})
+def test_chat_stream_error_never_returns_partial_success():
+    from handlers.llm_providers.protocols.registry import adapter_for
     req = _request()
     req.stream = True
     req.extra["_request_cancellation"] = RequestCancellation()
-
+    chunks = [{"choices": [{"delta": {"content": "hello"}}]}, {"error": {"message": "upstream failed"}}]
     with pytest.raises(LLMProviderError) as caught:
-        provider._handle_stream(iter((TextChunk(), ErrorChunk())), req)
-
+        adapter_for("openai_chat_completions").consume_stream(req, chunks)
     assert caught.value.code == "stream.provider_error"
     assert not caught.value.retryable
-    provider.close()
 
 
 def test_stream_supervisor_distinguishes_first_event_and_idle_deadlines():

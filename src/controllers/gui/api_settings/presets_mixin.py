@@ -204,11 +204,16 @@ class PresetsMixin:
         self.load_preset_async(int(cur_item.preset_id))
 
     def load_preset_async(self, preset_id: int) -> None:
+        self._preset_load_serial = getattr(self, '_preset_load_serial', 0) + 1
+        serial = self._preset_load_serial
+        self._set_model_suggestions([])
         def _call():
             service = use(ApiPresetService)
             return service.get_full(int(preset_id)), service.load_state(int(preset_id))
 
         def _apply(payload):
+            if serial != self._preset_load_serial:
+                return
             preset, state = payload
             if not preset:
                 return
@@ -299,9 +304,7 @@ class PresetsMixin:
             self._apply_help_links(preset)
             self._refresh_model_settings_dialect()
 
-            known_models = preset.get("known_models", []) or []
-            if isinstance(known_models, list) and known_models:
-                v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
+            self._set_model_suggestions(preset.get('known_models'))
 
             v.provider_label.setText(str(preset.get("name", "")))
             v.preset_name_row.set_text(preset.get("name", ""))
@@ -334,6 +337,10 @@ class PresetsMixin:
         v = self.view
         descriptor = describe_protocol(protocol_id)
         fields = descriptor.settings
+        if descriptor.account_actions:
+            self._ensure_account_status(protocol_id)
+        elif getattr(self, '_account_status_protocol', None):
+            self._set_account_status('', {})
         if hasattr(v, 'subscription_info'):
             v.subscription_info.configure(descriptor)
         v.test_button.setProperty('connectionActionLabel', descriptor.action_label)
@@ -353,6 +360,13 @@ class PresetsMixin:
         if hasattr(v, 'account_button'):
             v.account_button.setVisible(descriptor.account_actions)
             v.account_button.setEnabled(not bool(v.test_button.property('apiTesting')))
+            status = getattr(self, '_account_status', {})
+            label = status.get('email') if status.get('signed_in') else ''
+            v.account_button.setText(str(label or _("Аккаунты", "Accounts")))
         if hasattr(v, 'models_button'):
             v.models_button.setVisible(descriptor.account_actions)
-            v.models_button.setEnabled(not bool(v.test_button.property('apiTesting')))
+            available = descriptor.account_actions and self._can_load_account_models(protocol_id)
+            v.models_button.setEnabled(available and not bool(v.test_button.property('apiTesting')))
+            v.models_button.setToolTip('' if available else _(
+                "Сначала войдите через ChatGPT и разрешите использование плана.",
+                "Sign in with ChatGPT and allow plan usage first."))

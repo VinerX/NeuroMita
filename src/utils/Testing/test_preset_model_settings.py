@@ -30,13 +30,13 @@ class PresetModelSettingsTests(unittest.TestCase):
         self.assertEqual(localized_text({"RU": labels["ru"], "EN": labels["en"]}, "ru"), labels["ru"])
         self.assertEqual(localized_text(labels, "unknown"), labels["en"])
 
-    def test_bundled_definitions_seed_external_files_and_compile_defaults(self):
+    def test_bundled_definitions_compile_without_external_files(self):
         catalog = self.service.repository.catalog()
         self.assertGreaterEqual(len(catalog), 11)
         for identifier, schema in catalog.items():
             document = self.service.create(identifier)
             self.service.compile(document, schema.data["dialect"])
-            self.assertTrue((self.directory / "schemas" / (identifier + ".json")).exists())
+        self.assertEqual(list((self.directory / "schemas").glob("*.json")), [])
 
     def test_google_level_never_sends_budget_and_preserves_false_and_zero(self):
         document = self.service.create("google-level")
@@ -201,14 +201,13 @@ class PresetModelSettingsTests(unittest.TestCase):
                 self.assertEqual(controller.get_full(1001)["model_settings"], document)
                 controller.close()
 
-    def test_native_http_payload_ignores_legacy_mapper_and_reasoning(self):
+    def test_native_parameters_bypass_fallback_generation_settings(self):
         from handlers.llm_providers.base import LLMRequest
-        from handlers.llm_providers.common_provider import CommonProvider
-        provider = CommonProvider()
-        req = LLMRequest(model="new-model", messages=[], native_parameters={"customSampling": {"seed": 42}}, capabilities={"structured_output": False}, extra={"temperature": 1000, "enable_thinking": False})
-        with patch.object(provider, "_map_unified_params", side_effect=AssertionError("Legacy mapper used")):
-            payload = provider._build_payload(req, req.model, [])
-        self.assertEqual(payload, {"model": "new-model", "messages": [], "customSampling": {"seed": 42}})
+        from handlers.llm_providers.protocols.registry import adapter_for
+        req = LLMRequest(model="new-model", messages=[], native_parameters={"customSampling": {"seed": 42}},
+                         extra={"temperature": 1000, "enable_thinking": False})
+        payload = adapter_for("openai_chat_completions").encode(req, wire_stream=False)
+        self.assertEqual(payload, {"model": "new-model", "messages": [], "stream": False, "customSampling": {"seed": 42}})
 
     def test_gemini_native_parameters_bypass_legacy_profile(self):
         from handlers.llm_providers.base import LLMRequest
@@ -229,32 +228,28 @@ class PresetModelSettingsTests(unittest.TestCase):
         from handlers.llm_providers.gemini_provider import GeminiProvider
         self.assertFalse(GeminiProvider._should_send_native_structured_output(caps))
 
-    def test_sdk_sends_arbitrary_native_fields_and_respects_disabled_native_schema(self):
+    def test_http_sends_arbitrary_native_fields_and_respects_disabled_native_schema(self):
         import httpx
-        from openai import OpenAI
-        from handlers.llm_providers.openai_provider import OpenAIProvider
         from handlers.llm_providers.base import LLMRequest
+        from handlers.llm_providers.common_provider import CommonProvider
+        from handlers.llm_providers.http_transport import LLMHttpClient
         captured = []
-
         def respond(request):
             captured.append(json.loads(request.content))
-            return httpx.Response(200, json={"id": "test", "object": "chat.completion", "created": 0, "model": "new-model", "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}]})
-
-        client = OpenAI(api_key="test", base_url="https://test.invalid/v1", http_client=httpx.Client(transport=httpx.MockTransport(respond)))
-
-        class Provider(OpenAIProvider):
-            def is_applicable(self, req):
-                return True
-
-            def _get_client(self, req):
-                return client
-
-        provider = Provider()
-        request = LLMRequest(model="new-model", messages=[{"role": "user", "content": "Hello"}], dialect_id="openai_chat_completions", native_parameters={"vendor_settings": {"budget": 0, "thinking": False}}, capabilities={"structured_output": True, "native_structured_output": False})
-        response = provider.generate(request)
-        self.assertEqual(response.text, "OK")
-        self.assertEqual(captured[0]["vendor_settings"], {"budget": 0, "thinking": False})
-        self.assertNotIn("response_format", captured[0])
+            return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]})
+        transport = LLMHttpClient(client_factory=lambda *_: httpx.Client(transport=httpx.MockTransport(respond)))
+        provider = CommonProvider(http_transport=transport)
+        try:
+            request = LLMRequest(model="new-model", messages=[{"role": "user", "content": "Hello"}],
+                api_url="https://test.invalid/v1", dialect_id="openai_chat_completions",
+                native_parameters={"vendor_settings": {"budget": 0, "thinking": False}},
+                capabilities={"structured_output": True, "native_structured_output": False})
+            self.assertEqual(provider.generate(request).text, "OK")
+            self.assertEqual(captured[0]["vendor_settings"], {"budget": 0, "thinking": False})
+            self.assertNotIn("response_format", captured[0])
+        finally:
+            provider.close()
+            transport.close()
 
     def test_presets_save_reload_and_reject_invalid_values_without_mutation(self):
         from controllers.api_presets_controller import ApiPresetsController

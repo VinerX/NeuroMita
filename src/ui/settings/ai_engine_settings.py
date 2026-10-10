@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QProgressBar,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -359,6 +360,12 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
     self.ai_maintenance_status.setWordWrap(True)
     maintenance.add_widget(self.ai_maintenance_status)
 
+    self.ai_maintenance_progress = QProgressBar()
+    self.ai_maintenance_progress.setRange(0, 0)
+    self.ai_maintenance_progress.setTextVisible(False)
+    self.ai_maintenance_progress.hide()
+    maintenance.add_widget(self.ai_maintenance_progress)
+
     self.ai_environment_reset = tr_set(
         QPushButton(),
         "Удалить все AI-окружения",
@@ -635,7 +642,9 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
         self.ai_maintenance_status.setText(
             error or message or _("Готово", "Ready")
         )
-        busy = bool(state.busy or maintenance_state.get("busy"))
+        deleting = bool(state.reset_running or maintenance_state.get("busy"))
+        busy = bool(state.busy or deleting)
+        self.ai_maintenance_progress.setVisible(deleting)
         self.ai_environment_reset.setEnabled(
             not busy and bool(maintenance_state.get("path"))
         )

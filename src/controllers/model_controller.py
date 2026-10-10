@@ -914,13 +914,6 @@ class ModelController(GenerationService, ModelStateService):
     def token_stats(self) -> dict[str, Any]:
         return self._build_token_stats()
 
-    def schedule_g4f_update(self, version: str = "latest") -> bool:
-        logger.warning(
-            "g4f automatic installation and update scheduling are disabled; "
-            "an already installed package may still be used"
-        )
-        return False
-
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
         requested_cid = self._normalize_character_id_from_data(data)

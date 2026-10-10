@@ -13,7 +13,6 @@ from core.request_policy import RequestPolicy
 from handlers.chat_handler import ChatModel
 from handlers.llm_providers.common_provider import CommonProvider
 from handlers.llm_providers.http_transport import LLMHttpClient
-from handlers.llm_providers.openai_provider import OpenAIProvider
 from handlers.llm_providers.responses_provider import ResponsesProvider
 from managers.api_preset_resolver import ApiPresetResolver
 from schemas.structured_response import StructuredResponse
@@ -21,8 +20,8 @@ from services.contracts import RuntimeCapabilities
 from services.structured_response_capabilities import resolve_structured_response_capabilities
 
 
-@pytest.mark.parametrize("transport_kind", ["responses", "chat_http", "chat_sdk",
-                                            "responses_to_chat_http", "responses_to_chat_sdk"])
+@pytest.mark.parametrize("transport_kind", ["responses", "chat_http", "chat_openai_alias",
+                                            "responses_to_chat_http", "responses_to_chat_openai_alias"])
 @pytest.mark.parametrize("stream", [False, True])
 def test_native_tool_roundtrip_through_chat_model_runner_manager_and_executor(monkeypatch, transport_kind, stream):
     responses = transport_kind.startswith("responses")
@@ -90,19 +89,22 @@ def test_native_tool_roundtrip_through_chat_model_runner_manager_and_executor(mo
     manager.close()
     transport = LLMHttpClient(enable_http2=False, client_factory=lambda *_: httpx.Client(transport=httpx.MockTransport(handle)))
     manager.http_transport = transport
-    provider_type = ResponsesProvider if responses else (OpenAIProvider if transport_kind == "chat_sdk" else CommonProvider)
+    provider_type = ResponsesProvider if responses else CommonProvider
     provider = provider_type(http_transport=transport)
-    if transport_kind == "chat_sdk":
-        provider.name = "common"
+    if transport_kind == "chat_openai_alias":
+        original_resolve = model.preset_resolver.resolve
+        from dataclasses import replace
+        monkeypatch.setattr(model.preset_resolver, "resolve", lambda *args, **kwargs: replace(
+            original_resolve(*args, **kwargs), provider_name="openai"))
     manager._providers = [provider]
     if fallback:
         from dataclasses import replace
-        sdk = transport_kind.endswith("sdk")
-        chat_provider = (OpenAIProvider if sdk else CommonProvider)(http_transport=transport)
+        alias = transport_kind.endswith("openai_alias")
+        chat_provider = CommonProvider(http_transport=transport)
         manager._providers.append(chat_provider)
         main_preset = model.preset_resolver.resolve()
         fallback_preset = replace(main_preset, protocol_id="openai_compatible_default",
-            dialect_id="openai_chat_completions", provider_name="openai" if sdk else "common",
+            dialect_id="openai_chat_completions", provider_name="openai" if alias else "common",
             preset_name="Chat fallback")
         monkeypatch.setattr(model.preset_resolver, "resolve_chain", lambda _: [main_preset, fallback_preset])
     profile = resolve_structured_response_capabilities(settings=settings, runtime=RuntimeCapabilities(),
@@ -184,7 +186,7 @@ def test_native_tool_roundtrip_through_chat_model_runner_manager_and_executor(mo
                 replay = wire_requests[-1]["messages"]
                 assert next(message for message in replay if message.get("tool_calls"))["tool_calls"][0]["id"] == "real-call"
                 assert {"role": "tool", "tool_call_id": "real-call", "content": "2"} in replay
-                assert "responses_output" in restored[0]
+                assert "openai_responses" in restored[0]["protocol_history"]
             finally:
                 connection.close()
     finally:

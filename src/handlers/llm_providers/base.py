@@ -195,6 +195,7 @@ class LLMResponse:
     # не должно: text — только то, что видит игрок.
     reasoning: Optional[str] = None
     tool_calls: List[ToolCall] = field(default_factory=list)
+    protocol_history: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def _to_int(value: Any) -> int:

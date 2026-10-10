@@ -123,6 +123,8 @@ class ProtocolsMixin:
     def _on_protocol_changed(self, *_: Any) -> None:
         if self._is_loading_ui:
             return
+        self._set_model_suggestions([])
+        self.current_preset_data['known_models'] = None
         self._apply_protocol_details(self._current_protocol_id_ui())
         protocol = self._protocols.get(self._current_protocol_id_ui()) or {}
         self.model_settings_controller.set_dialect(

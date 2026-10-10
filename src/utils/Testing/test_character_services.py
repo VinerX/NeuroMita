@@ -84,6 +84,19 @@ class CharacterServiceTests(unittest.TestCase):
             os.environ["NEUROMITA_HISTORIES_DIR"] = self._old_histories
         self._temp_dir.cleanup()
 
+    def test_selected_persisted_variables_are_scoped_without_loading_history(self):
+        resources = CharacterResourceManager()
+        history_a = resources.history_for("A", "Character A")
+        history_b = resources.history_for("B", "Character B")
+        history_a.update_variables_batch({"attitude": 84, "boredom": 7, "unrelated": 123})
+        history_b.update_variables_batch({"attitude": 41})
+        try:
+            self.assertEqual(history_a.load_variables(["attitude", "boredom"]), {"attitude": 84, "boredom": 7})
+            self.assertEqual(history_b.load_variables(["attitude"]), {"attitude": 41})
+            self.assertEqual(history_a.load_variables([]), {})
+        finally:
+            resources.shutdown()
+
     def test_character_identity_contract_has_no_ambiguous_name_field(self):
         parameters = inspect.signature(Character.__init__).parameters
 

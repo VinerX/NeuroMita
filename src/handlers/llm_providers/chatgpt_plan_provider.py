@@ -9,7 +9,8 @@ from .base import (
     BaseProvider, LLMRequest, LLMResponse, RequestCancellation, get_request_cancellation, check_request_cancelled,
 )
 from .chatgpt_plan_auth import get_chatgpt_plan_auth
-from .protocols.responses import ResponsesAdapter, ResponsesPolicy
+from .protocols.responses import ResponsesPolicy
+from .protocols.registry import adapter_for
 from .protocols.responses.stream import iter_responses_events
 from .streaming import iter_sse_data
 from .errors import LLMProviderError
@@ -37,7 +38,7 @@ class ChatGPTPlanProvider(BaseProvider):
         req.capabilities['force_wire_stream'] = True
         if get_request_cancellation(req) is None:
             req.extra['_request_cancellation'] = RequestCancellation()
-        adapter = ResponsesAdapter(policy=ResponsesPolicy.siwc())
+        adapter = adapter_for('openai_responses', responses_policy=ResponsesPolicy.siwc())
         payload = adapter.encode(req, wire_stream=True)
         auth = get_chatgpt_plan_auth()
         account_id = None

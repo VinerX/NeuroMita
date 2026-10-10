@@ -159,13 +159,14 @@ def test_raw_responses_history_keeps_encrypted_reasoning_and_call():
               {'type': 'function_call', 'id': 'fc_1', 'call_id': 'call_real',
                'name': 'calculator', 'arguments': '{"value":41}'}]
     response.raw = {'output': output}
+    response.protocol_history = {'openai_responses': {'output': output}}
     bridge_native_tool_response(response, request())
     followup = native_tool_followup_messages(response.raw['native_tool_call'], '42')
-    assert response.raw['native_tool_history'] == output
-    assert followup[0]['responses_output'] == output
+    assert response.protocol_history['openai_responses']['output'] == output
+    assert followup[0]['protocol_history']['openai_responses']['output'] == output
     assert followup[1]['tool_call_id'] == 'call_real'
-    followup[0]['responses_output'][0]['encrypted_content'] = 'changed'
-    assert response.raw['native_tool_history'][0]['encrypted_content'] == 'cipher'
+    followup[0]['protocol_history']['openai_responses']['output'][0]['encrypted_content'] = 'changed'
+    assert response.protocol_history['openai_responses']['output'][0]['encrypted_content'] == 'cipher'
 
 
 def test_native_bridge_preserves_sparse_changes():
@@ -266,17 +267,25 @@ def test_native_mode_rejects_schema_only_call(sparse):
         bridge_native_tool_response(LLMResponse(text=json.dumps(data)), request())
 
 
-@pytest.mark.parametrize('raw_shape', ['choices', 'tool_calls'])
-def test_followup_preserves_original_chat_tool_extensions(raw_shape):
+@pytest.mark.parametrize('stream', [False, True])
+def test_followup_preserves_original_chat_tool_extensions(stream):
     from services.native_tool_calls import bridge_native_tool_response, native_tool_followup_messages
+    from handlers.llm_providers.protocols.registry import adapter_for
     original = {'id': 'call_real', 'type': 'function', 'index': 0,
                 'function': {'name': 'calculator', 'arguments': '{"value":41}'},
                 'extra_content': {'google': {'thought_signature': 'opaque-signature'}}}
-    response = native_response()
-    response.raw = ({'choices': [{'message': {'tool_calls': [original]}}]} if raw_shape == 'choices'
-                    else {'tool_calls': [original]})
-    bridge_native_tool_response(response, request())
-    replay = native_tool_followup_messages(response.raw['native_tool_call'], '42')[0]['tool_calls'][0]
+    req = request()
+    req.stream = stream
+    adapter = adapter_for('openai_chat_completions')
+    if stream:
+        response = adapter.consume_stream(req, [{'choices': [{'delta': {'tool_calls': [original]},
+                                                             'finish_reason': 'tool_calls'}]}])
+    else:
+        response = adapter.decode(req, {'choices': [{'message': {'tool_calls': [original]},
+                                                    'finish_reason': 'tool_calls'}]})
+    bridge_native_tool_response(response, req)
+    req.messages = native_tool_followup_messages(response.raw['native_tool_call'], '42')
+    replay = adapter.encode(req, wire_stream=False)['messages'][0]['tool_calls'][0]
     assert replay == {key: value for key, value in original.items() if key != 'index'}
     replay['extra_content']['google']['thought_signature'] = 'changed'
     assert original['extra_content']['google']['thought_signature'] == 'opaque-signature'
@@ -388,9 +397,9 @@ def test_native_exchange_persists_reloads_and_projects_for_subsequent_turn(monke
         exchange = assistant['structured_data']['native_tool_history']
         assert exchange[0]['tool_calls'][0]['id'] == 'call_real'
         if dialect == 'responses':
-            assert exchange[0]['responses_output'][0]['encrypted_content'] == 'cipher'
+            assert exchange[0]['protocol_history']['openai_responses']['output'][0]['encrypted_content'] == 'cipher'
         else:
-            assert exchange[0]['tool_calls'][0]['extra_content']['google']['thought_signature'] == 'opaque-signature'
+            assert exchange[0]['protocol_history']['openai_chat_completions']['tool_calls'][0]['extra_content']['google']['thought_signature'] == 'opaque-signature'
         assert exchange[1] == {'role': 'tool', 'tool_call_id': 'call_real', 'content': '42'}
         assert assistant['message_id'] != 'out:t'
         projector = HistoryController.__new__(HistoryController)

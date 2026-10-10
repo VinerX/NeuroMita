@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
+from copy import deepcopy
 
 from ...base import LLMResponse, LLMUsage
 from ...errors import LLMProviderError
@@ -77,4 +78,5 @@ def decode_response(req: Any, payload: Mapping, *, namespace: str | None = None)
                        model=str(payload.get('model') or req.model),
                        provider_name=req.provider_name or 'responses',
                        provider_display_name=req.provider_display_name,
-                       finish_reason='completed', raw=dict(payload))
+                       finish_reason='completed', raw=dict(payload),
+                       protocol_history={'openai_responses': {'output': deepcopy(output)}})

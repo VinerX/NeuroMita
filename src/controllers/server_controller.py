@@ -432,15 +432,12 @@ class ServerController:
             return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
 
         try:
-            ch = use(CharacterRegistry).get(cid)
-            if ch is not None and hasattr(ch, "get_stats_dict"):
-                v = ch.get_stats_dict()
-                if isinstance(v, dict):
-                    return {
-                        "attitude": float(v.get("attitude", 60.0)),
-                        "boredom": float(v.get("boredom", 10.0)),
-                        "stress": float(v.get("stress", 5.0)),
-                    }
+            values = use(CharacterRegistry).stats_of(cid)
+            return {
+                "attitude": float(values.get("attitude", 60.0)),
+                "boredom": float(values.get("boredom", 10.0)),
+                "stress": float(values.get("stress", 5.0)),
+            }
         except Exception:
             pass
 
