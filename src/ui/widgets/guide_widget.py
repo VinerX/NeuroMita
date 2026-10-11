@@ -105,8 +105,29 @@ class GuideWidget(QWidget):
             6: (0.846, 0.368, 0.102, 0.045),
         },
         "VoiceoverGuidePage": {
-            1: (0.91, 0.31, 0.08, 0.14), 2: (0.13, 0.43, 0.83, 0.10),
-            3: (0.13, 0.78, 0.83, 0.10), 4: (0.90, 0.62, 0.09, 0.12),
+            1: (0.0544, 0.2205, 0.0340, 0.0261),
+            2: (0.2633, 0.2227, 0.0578, 0.0232),
+            3: (0.3197, 0.2227, 0.0680, 0.0232),
+            4: (0.4065, 0.2227, 0.0442, 0.0232),
+            5: (0.5293, 0.3295, 0.0272, 0.0232),
+            6: (0.1088, 0.3295, 0.4082, 0.0232),
+            7: (0.1088, 0.3614, 0.4082, 0.0232),
+            8: (0.1156, 0.6003, 0.3673, 0.0232),
+            9: (0.4884, 0.5963, 0.0272, 0.0232),
+            10: (0.5327, 0.6352, 0.0204, 0.0174),
+            11: (0.1156, 0.6323, 0.3673, 0.0232),
+            12: (0.1088, 0.6641, 0.4082, 0.0232),
+            13: (0.1558, 0.7883, 0.0612, 0.0522),
+            14: (0.4517, 0.9014, 0.1497, 0.0116),
+            15: (0.1116, 0.8974, 0.3401, 0.0232),
+            16: (0.4293, 0.9432, 0.1224, 0.0203),
+        },
+        "MicrophoneGuidePage": {
+            1: (0.100, 0.415, 0.105, 0.035),
+            2: (0.055, 0.300, 0.030, 0.028),
+            3: (0.390, 0.415, 0.375, 0.035),
+            4: (0.030, 0.490, 0.460, 0.480),
+            5: (0.510, 0.490, 0.460, 0.480),
         },
         "MemoryRagGuidePage": {
             1: (0.03, 0.13, 0.24, 0.10), 2: (0.05, 0.22, 0.88, 0.10),
@@ -1300,24 +1321,52 @@ class VoiceoverGuidePage(IGuidePage):
     def get_description_ru(self):
         return """Хотите, чтобы Мита отвечала голосом?
 • Включите <b>1 - Использовать озвучку</b>.
-• В <b>2 - Методе озвучки</b> выберите <b>TG</b> для Telegram или <b>Local</b> для локального синтеза.
+• В методе озвучки выберите <b>2 - Telegram</b> для озвучки в TG, <b>3 - Локальная</b> для локального синтеза или <b>4 - API</b> для онлайн-генерации.
 
-<b>Если выбрали Local:</b>
-• Укажите <b>3 - язык озвучки</b>.
-• Нажмите <b>4 - Установить</b>. Откроется <b>AI Hub</b>, где можно подобрать голосовую модель.
+<b>Если выбрали Telegram:</b>
+• Вам понадобится указать номер телефона.
+• Также нужно будет использовать ваш аккаунт Telegram.
 
-После установки локальная озвучка готова к работе."""
+<b>Если выбрали Локальная:</b>
+• Нажмите <b>5 - Настройки</b> и загрузите подходящую для вашей видеокарты модель, а также установите голоса Мит.
+• Выберите <b>6 - Модель</b> из установленных.
+• Выберите <b>7 - Язык озвучки</b>.
+Теперь локальная озвучка готова к работе.
+
+<b>Если выбрали API-озвучку:</b>
+• Выберите <b>8 - Профиль озвучки</b> либо <b>9 - +</b> создайте свой профиль.
+• Откройте <b>10 - Ссылку сайта озвучки</b>, зарегистрируйтесь и получите API-ключ.
+• Введите <b>11 - API-ключ</b>.
+• Выберите <b>12 - Модель озвучки</b>.
+• Выберите <b>13 - Персонажа</b>, откройте <b>14 - Страницу с выбором голосов</b> и найдите там подходящий голос.
+• Вставьте <b>15 - ID голоса</b> или ссылку на него.
+• Нажмите <b>16 - Сохранить профиль</b>.
+Теперь API-озвучка работает."""
 
     def get_description_en(self):
         return """Want Mita to answer with a voice?
 • Enable <b>1 - Use speech</b>.
-• In <b>2 - Voiceover Method</b>, choose <b>TG</b> for Telegram or <b>Local</b> for local synthesis.
+• In the voiceover method, choose <b>2 - Telegram</b> for voiceover in TG, <b>3 - Local</b> for local synthesis, or <b>4 - API</b> for online generation.
 
-<b>If you choose Local:</b>
-• Select <b>3 - the voice language</b>.
-• Click <b>4 - Install</b>. <b>AI Hub</b> will open so you can choose a voice model.
+<b>If you chose Telegram:</b>
+• You'll need to provide your phone number.
+• You'll also need to use your Telegram account.
 
-After installation, local voiceover is ready to use."""
+<b>If you chose Local:</b>
+• Click <b>5 - Settings</b> and download a model suitable for your GPU, and install Mita voices.
+• Choose <b>6 - Model</b> from the installed ones.
+• Choose <b>7 - Voiceover language</b>.
+Now local voiceover is ready to use.
+
+<b>If you chose API voiceover:</b>
+• Choose <b>8 - a voice profile</b>, or <b>9 - +</b> to create your own.
+• Open <b>10 - the voice service link</b>, register, and get an API key.
+• Enter <b>11 - API key</b>.
+• Choose <b>12 - Voiceover model</b>.
+• Choose <b>13 - Character</b>, open <b>14 - the character voice selection page</b>, and find the matching voice.
+• Paste <b>15 - Voice ID</b> or a link to it.
+• Click <b>16 - Save profile</b>.
+Now API voiceover works."""
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_voice.png" if language == "ru" else "guide/guide_voice1.png"
@@ -1327,7 +1376,7 @@ After installation, local voiceover is ready to use."""
 
 
     def get_image_crop(self):
-        return (0.02, 0.09, 0.98, 0.70)
+        return None
 
 
 class MicrophoneGuidePage(IGuidePage):
@@ -1342,30 +1391,30 @@ class MicrophoneGuidePage(IGuidePage):
     def get_description_ru(self):
         return """Вы можете не только слышать Миту, но и говорить с ней, используя ввод голосом.
 
-Чтобы включить микрофон:
+<b>Чтобы включить микрофон:</b>
 • Перейдите в настройки.
 • Выберите вкладку <b>ASR</b> со значком микрофона.
-• Выберите ваш микрофон из <b>1 - списка устройств</b>.
-• Нажмите кнопку <b>2 - Перейти к настройкам ИИ-движка</b>.
-• Откроется <b>AI Hub</b> — перейдите на вкладку <b>3 - Распознавание (ASR)</b>.
-• Выберите подходящую модель распознавания речи и дождитесь установки.
-• Установите галочку <b>4 - Микрофон активен</b>
+• Нажмите <b>1 - Каталог моделей</b> и установите модель распознавания речи.
+• Включите переключатель <b>2 - Микрофон активен</b>.
+• Выберите активное <b>3 - Устройство ввода</b>.
 
-Теперь можно общаться с Митой голосом."""
+<b>Дополнительно:</b>
+• Можно тонко настроить поведение при отправке сообщений — установите нужные галочки в разделе <b>4 - Поведение и отправка</b>.
+• Если речь распознаётся плохо, загляните в <b>5 - Параметры распознавания</b>."""
 
     def get_description_en(self):
         return """You can not only hear Mita, but also talk to her using voice input.
 
-To set up the microphone:
+<b>To enable the microphone:</b>
 • Go to Settings.
 • Select the <b>ASR</b> tab with the microphone icon.
-• Choose your microphone from <b>1 - the device list</b>.
-• Click the <b>2 - Open AI Engine settings</b> button.
-• The <b>AI Hub</b> will open — go to the <b>3 - ASR</b> tab.
-• Select a suitable speech recognition model and wait for it to install.
-• Check the box <b>4 - Microphone active</b>.
+• Click <b>1 - Model catalog</b> and install a speech recognition model.
+• Turn on the <b>2 - Microphone active</b> toggle.
+• Choose the active <b>3 - Input device</b>.
 
-Now you can talk to Mita with your voice."""
+<b>Additionally:</b>
+• You can fine-tune the behavior for sending messages — check the needed boxes in the <b>4 - Behavior and sending</b> section.
+• If speech is recognized poorly, look into <b>5 - Recognition Parameters</b>."""
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_microphone.png" if language == "ru" else "guide/guide_microphone1.png"
