@@ -4,6 +4,7 @@ import asyncio
 import os
 
 from handlers.local_voice_handler import LocalVoice
+import pytest
 
 
 class _RuntimeAwareModel:
@@ -39,6 +40,19 @@ def _voice_with_model(model: _RuntimeAwareModel) -> LocalVoice:
     voice.active_model_instance = None
     voice._registry = {"edge_tts_rvc_cuda": model}
     return voice
+
+
+def test_initialization_preserves_model_exception(monkeypatch):
+    model = _RuntimeAwareModel()
+    voice = _voice_with_model(model)
+    monkeypatch.setattr(voice, "is_model_installed", lambda _id: True)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("HuBERT model is missing")
+
+    monkeypatch.setattr(model, "initialize", fail)
+    with pytest.raises(RuntimeError, match="HuBERT model is missing"):
+        voice.initialize_model("edge_tts_rvc_cuda")
 
 
 def test_local_voice_installed_check_uses_worker_runtime_context(monkeypatch, tmp_path):

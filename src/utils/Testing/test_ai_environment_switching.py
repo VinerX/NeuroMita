@@ -288,6 +288,54 @@ def test_successful_candidate_switches_all_services_atomically() -> None:
     assert set(controller._service_to_worker) == {"tts", "asr", "rag", "beats"}
 
 
+def test_activation_diagnostics_survive_candidate_rollback() -> None:
+    from concurrent.futures import Future
+
+    current = _current_worker(("X:/old-overlay",))
+    registry = _EnvironmentRegistry(("X:/new-overlay",))
+    controller = _controller(current, registry)
+    diagnostics = []
+
+    def failing_call(self, *_args, **_kwargs):
+        future = Future()
+        future.set_exception(RuntimeError("CUDA driver is insufficient"))
+        return future
+
+    with patch("controllers.ai_engine_controller._Worker", _Worker), patch.object(_Worker, "call", failing_call):
+        result = controller.activate_environment(
+            "tts", "voice-a", timeout=1.0, validation_method="init_model",
+            validation_payload={"model_id": "voice-a"}, diagnostics=diagnostics,
+        )
+    assert result is False
+    assert any("CUDA driver is insufficient" in error for error in diagnostics)
+    assert controller._workers["shared"].python_paths == current.python_paths
+    assert registry.promoted is None
+
+
+def test_reused_runtime_reports_validation_error_without_replacement() -> None:
+    from concurrent.futures import Future
+
+    current = _current_worker(("X:/overlay",))
+    registry = _EnvironmentRegistry(current.python_paths)
+    controller = _controller(current, registry)
+    diagnostics = []
+
+    def failing_call(*_args, **_kwargs):
+        future = Future()
+        future.set_exception(FileNotFoundError("X:/missing/HuBERT.onnx"))
+        return future
+
+    current.call = failing_call
+    result = controller.activate_environment(
+        "tts", "voice-a", timeout=1.0, validation_method="init_model",
+        validation_payload={"model_id": "voice-a"}, diagnostics=diagnostics,
+    )
+    assert result is False
+    assert any("X:/missing/HuBERT.onnx" in error for error in diagnostics)
+    assert controller._workers["shared"] is current
+    assert current.stopped is False
+
+
 def test_model_initialization_failure_preserves_current_shared_worker() -> None:
     current = _current_worker(("X:/old-overlay", "X:/old-backend"))
     registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))

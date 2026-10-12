@@ -100,6 +100,7 @@ class LocalVoiceController(LocalVoiceService):
             if initialize
             else None
         )
+        diagnostics: list[str] = []
         ok = await asyncio.to_thread(
             activate,
             "tts",
@@ -109,9 +110,14 @@ class LocalVoiceController(LocalVoiceService):
             validation_method=validation_method,
             validation_payload=validation_payload,
             validation_timeout=3600.0 if initialize else 20.0,
+            diagnostics=diagnostics,
         )
         if not ok:
-            raise RuntimeError(f"Failed to activate runtime environment for voice model '{model_id}'")
+            detail = "\n".join(dict.fromkeys(diagnostics))
+            raise RuntimeError(
+                f"Failed to activate runtime environment for voice model '{model_id}'"
+                + (f"\n\n{detail}" if detail else "")
+            )
 
     async def _engine_call_async(self, method: str, payload: Optional[dict] = None, timeout: Optional[float] = None):
         eng = self._get_engine()

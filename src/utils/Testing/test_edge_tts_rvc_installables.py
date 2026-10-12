@@ -22,6 +22,28 @@ from installables.registry_builder import build_installable_registry
 
 
 class EdgeTTSRVCInstallablesTests(unittest.TestCase):
+    def test_missing_rvc_file_reports_its_path(self):
+        parent = SimpleNamespace(current_model_id=EDGE_TTS_RVC_ONNX_ID)
+        model = EdgeTTSRVCOnnxModel(parent, EDGE_TTS_RVC_ONNX_ID)
+        model.tts_rvc_module = object()
+        model._load_settings_for = lambda _id: {}
+        missing_path = "X:/missing/Mila.onnx"
+        with patch.object(model, "_default_model_path", return_value=missing_path), patch.object(model, "_describe_hubert_state", return_value="ready"), patch("handlers.voice_models.edge_tts_rvc_model.os.path.exists", return_value=False):
+            with self.assertRaisesRegex(FileNotFoundError, "X:/missing/Mila.onnx"):
+                model.initialize()
+        self.assertFalse(model.initialized)
+        self.assertIsNone(model.initialized_for)
+
+    def test_initialization_propagates_original_runtime_error(self):
+        parent = SimpleNamespace(current_model_id=EDGE_TTS_RVC_ONNX_ID)
+        model = EdgeTTSRVCOnnxModel(parent, EDGE_TTS_RVC_ONNX_ID)
+        failure = RuntimeError("HuBERT model is missing")
+        with patch.object(model, "_load_rvc_class", side_effect=failure), patch.object(model, "_describe_hubert_state", return_value="missing"):
+            with self.assertRaisesRegex(RuntimeError, "HuBERT model is missing"):
+                model.initialize()
+        self.assertFalse(model.initialized)
+        self.assertIsNone(model.initialized_for)
+
     def test_native_indexed_directml_does_not_require_legacy_methods(self):
         from handlers.voice_models.onnx_device_adapter import enable_indexed_directml
 
