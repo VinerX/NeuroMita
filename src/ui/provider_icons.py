@@ -11,6 +11,7 @@ def template_provider(name: str, protocol_id: str = "") -> str:
         "ProxyAPI": "proxyapi", "Groq": "groq", "Together AI": "together",
         "Chutes": "chutes", "KodikRouter": "kodikrouter",
         "LM Studio": "lmstudio", "Ollama": "ollama",
+        "OpenAI Responses (API key)": "openai",
         "ChatGPT Plan (Codex)": "openai",
     }.get(name, protocol_provider(protocol_id))
 
@@ -22,6 +23,7 @@ def protocol_provider(protocol_id: str) -> str:
         "openrouter_default": "openrouter",
         "mistral_default": "mistral",
         "lmstudio_default": "lmstudio",
+        "openai_responses_default": "openai",
         "chatgpt_plan_default": "openai",
     }.get(protocol_id, "")
 
