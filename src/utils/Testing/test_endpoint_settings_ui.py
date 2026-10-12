@@ -57,6 +57,16 @@ def test_custom_check_field_controls_check_button_live(editor):
     assert root.test_button.isHidden()
 
 
+@pytest.mark.parametrize("template", API_TEMPLATES_DATA, ids=lambda item: item["name"])
+def test_builtin_template_hides_check_url_with_stale_custom_value(editor, template):
+    root = editor.view
+    editor._active_template = asdict(ApiTemplate(**template))
+    root.api_url_row.set_text(template.get("url") or template.get("url_tpl", "").replace("{model}", "test-model"))
+    root.api_test_url_row.set_text("https://generativelanguage.googleapis.com/v1beta/models?key={key}")
+    editor._apply_help_links(template)
+    assert root.api_test_url_row.isHidden()
+
+
 def test_local_server_address_is_not_reset_when_other_fields_change(editor):
     root = editor.view
     template = next(item for item in API_TEMPLATES_DATA if item["id"] == 9)
