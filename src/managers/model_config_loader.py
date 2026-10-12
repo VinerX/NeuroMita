@@ -64,7 +64,7 @@ def _to_optional_bool(v: Any, default: Optional[bool] = None) -> Optional[bool]:
 @dataclass
 class ModelRuntimeConfig:
     # generation params
-    max_response_tokens: int = 2500
+    max_response_tokens: int = 5000
     temperature: Optional[float] = None
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
@@ -174,7 +174,7 @@ class ModelConfigLoader:
     def load(self) -> ModelRuntimeConfig:
         s = self.settings
         cfg = ModelRuntimeConfig(
-            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS"), 2500) or 2500,
+            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS"), 5000) or 5000,
             temperature=_to_float(s.get("MODEL_TEMPERATURE"), None),
             presence_penalty=_to_float(s.get("MODEL_PRESENCE_PENALTY", 0.0), 0.0),
             frequency_penalty=_to_float(s.get("MODEL_FREQUENCY_PENALTY", 0.0), 0.0),
