@@ -44,6 +44,8 @@ def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
     """
     if not _has_context_images(context):
         return False
+    if str(context.get("image_source") or "").strip().lower() == "tv_observer":
+        return False
     if str(context.get("image_source") or "").strip().lower() == "mita_camera":
         return True
     if context.get("mita_camera", False):
