@@ -164,6 +164,7 @@ class ServerController:
             "MITA_CAMERA_JPEG_QUALITY",
             "MITA_CAMERA_USE_FILE_TRANSFER",
             # Image transport: "shared_files" | "socket" | "auto"
+            "ENABLE_IMAGE_ANALYSIS",
             "IMAGE_TRANSPORT_MODE",
         ]
 
@@ -469,6 +470,7 @@ class ServerController:
                 settings[str(setting)] = False
                 continue
             defaults = {
+                "ENABLE_IMAGE_ANALYSIS": True,
                 "ASR_INPUT_MODE": "radio",
                 "MIC_ACTIVE": False,
                 "MIC_MUTE_WHILE_SPEAKING": False,
