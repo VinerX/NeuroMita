@@ -155,3 +155,31 @@ def test_existing_template_ids_and_protocols_are_preserved():
     actual = {item['id']: item['protocol_id'] for item in API_TEMPLATES_DATA}
     assert {identifier: actual[identifier] for identifier in old_ids} == old_ids
     assert len(actual) == len(API_TEMPLATES_DATA)
+
+
+@pytest.mark.parametrize('protocol_id,schema_id,default_sparse', [
+    ('chatgpt_plan_default', 'chatgpt-plan', True),
+    ('openai_responses_default', 'openai-responses', False),
+    ('google_gemini_default', 'google-level', False),
+    ('openrouter_default', 'openrouter', False),
+    ('openai_compatible_default', 'openai-compatible', False),
+])
+@pytest.mark.parametrize('saved_sparse', [None, False, True])
+def test_sparse_preset_setting_applies_only_to_responses(service, protocol_id, schema_id, default_sparse, saved_sparse):
+    registry = ProtocolRegistry(API_PROTOCOLS_DATA)
+    protocol = registry.get(protocol_id)
+    document = service.create(schema_id)
+    if saved_sparse is not None:
+        document['sparse_response'] = saved_sparse
+    preset = {'name': 'Test', 'protocol_id': protocol_id, 'model_settings': document}
+    original = deepcopy(preset)
+    resolver = ApiPresetResolver({}, None, model_settings_service=service)
+    with patch('managers.api_preset_resolver.get_protocol_registry', return_value=registry), \
+            patch.object(resolver, '_load_preset_full', return_value=preset), \
+            patch.object(resolver, '_build_http_request_via_protocols_controller', return_value=('https://example.test', {})):
+        resolved = resolver.resolve(1001)
+    expected = protocol.dialect == 'openai_responses' and (
+        default_sparse if saved_sparse is None else saved_sparse
+    )
+    assert resolved.capabilities['sparse_response'] is expected
+    assert preset == original

@@ -129,9 +129,10 @@ class ModelSettingsForm(QWidget):
         self.orphan_fields.clear()
         self.sparse_response = tr_set(QCheckBox(), "Компактный структурированный ответ", "Compact structured response")
         tr_set(self.sparse_response,
-               "Текст и только нужные действия в events. Выключите для прежнего полного JSON. Настройка принадлежит этому пресету и применяется со следующего запроса.",
-               "Text and only needed operations in events. Disable for the previous full JSON. This setting belongs to this preset and applies from the next request.", "setToolTip")
+               "Для Codex и Responses API: текст и только нужные действия в changes. Выключите для прежнего полного JSON. Настройка применяется со следующего запроса.",
+               "For Codex and Responses API: text and only needed operations in changes. Disable for the previous full JSON. Applies from the next request.", "setToolTip")
         self.sparse_response.setChecked(document.get("sparse_response", schema.data["dialect"] == "openai_responses"))
+        self.sparse_response.setVisible(schema.data["dialect"] == "openai_responses")
         self.sparse_response.toggled.connect(self._field_changed)
         self.rows.addWidget(self.sparse_response)
         for spec in schema.fields:

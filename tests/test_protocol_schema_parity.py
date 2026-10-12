@@ -13,7 +13,7 @@ from services.structured_response_capabilities import resolve_structured_respons
 
 
 @pytest.mark.parametrize("sparse", [False, True])
-def test_both_dialects_use_authoritative_profile_schema(sparse):
+def test_compact_schema_is_exclusive_to_responses(sparse):
     profile = resolve_structured_response_capabilities(settings={}, runtime=RuntimeCapabilities(),
         character=SimpleNamespace(), structured_output=True, tools_enabled=False, enabled_tools=[],
         tools_mode="off", tool_depth=0, tool_max_depth=1, images_available=False,
@@ -22,11 +22,17 @@ def test_both_dialects_use_authoritative_profile_schema(sparse):
         "structured_response_profile": profile, "sparse_response": sparse})
     completions = adapter_for("openai_chat_completions").encode(req, wire_stream=False)["response_format"]["json_schema"]["schema"]
     responses = adapter_for("openai_responses").encode(req, wire_stream=False)["text"]["format"]["schema"]
-    assert completions["properties"].keys() == responses["properties"].keys()
-    assert "tool_call" not in responses["properties"]
-    assert "reasoning" not in responses["properties"]
-    if sparse:
-        assert "changes" in responses["properties"]
+    for schema in (completions, responses):
+        assert "tool_call" not in schema["properties"]
+        assert "reasoning" not in schema["properties"]
+    assert "changes" not in completions["properties"]
+    assert "attitude_change" in completions["properties"]
+    assert completions["properties"]["segments"]["items"]["required"] == ["text"]
+    assert ("changes" in responses["properties"]) == sparse
+    assert ("attitude_change" in responses["properties"]) != sparse
+    assert set(responses["required"]) == set(responses["properties"])
+    if not sparse:
+        assert completions["properties"].keys() == responses["properties"].keys()
 
 
 def test_profile_intent_and_custom_field_options_reach_both_encoders():

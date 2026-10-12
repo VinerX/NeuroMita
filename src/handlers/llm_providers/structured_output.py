@@ -4,16 +4,19 @@ from copy import deepcopy
 from typing import Any
 
 from schemas.structured_response import StructuredResponse
-from schemas.sparse_structured_response import provider_structured_model
-from services.structured_response_capabilities import provider_schema_options
+from schemas.sparse_structured_response import build_sparse_response_model
+from services.structured_response_capabilities import StructuredResponseCapabilities, provider_schema_options
 
 
 def openai_response_format(req: Any) -> dict:
+    return _response_format(req, req.structured_model or StructuredResponse)
+
+
+def _response_format(req: Any, model: type) -> dict:
     caps = req.capabilities or {}
     if caps.get('structured_output_mode', 'json_schema') == 'json_object':
         return {'type': 'json_object'}
     options = provider_schema_options(caps)
-    model = provider_structured_model(req.structured_model or StructuredResponse, caps)
     return model.openai_response_format(
         exclude_fields=options['exclude_fields'] or None,
         custom_params=caps.get('custom_params') or None,
@@ -49,7 +52,11 @@ def _strict_schema(source: dict, property_name: str = '') -> dict:
 
 
 def responses_text_format(req: Any) -> dict:
-    response_format = openai_response_format(req)
+    model = req.structured_model or StructuredResponse
+    profile = (req.capabilities or {}).get('structured_response_profile')
+    if isinstance(profile, StructuredResponseCapabilities) and profile.sparse_enabled and issubclass(model, StructuredResponse):
+        model = build_sparse_response_model(model, profile)
+    response_format = _response_format(req, model)
     if response_format['type'] == 'json_object':
         return response_format
     definition = deepcopy(response_format['json_schema'])

@@ -347,30 +347,49 @@ def test_sparse_contract_and_stream_filter_do_not_expose_changes_as_speech():
     assert "".join(value for channel, value in pieces if channel == "content").strip() == "Hello"
 
 
-def test_gamemaster_and_legacy_provider_selection_remain_unchanged():
+def test_gamemaster_and_legacy_responses_selection_remain_unchanged():
+    from handlers.llm_providers.base import LLMRequest
+    from handlers.llm_providers.structured_output import responses_text_format
     from schemas.game_master_response import GameMasterResponse
-    from schemas.sparse_structured_response import provider_structured_model
-    assert provider_structured_model(GameMasterResponse, {"structured_response_profile": profile()}) is GameMasterResponse
-    assert provider_structured_model(StructuredResponse, {}) is StructuredResponse
-    assert provider_structured_model(StructuredResponse, {"structured_response_profile": profile()}) is build_sparse_response_model(StructuredResponse, profile())
+    req = LLMRequest(model="test", messages=[], structured_model=GameMasterResponse,
+                     capabilities={"structured_response_profile": profile()})
+    assert responses_text_format(req)["name"] == "game_master_response"
+    assert req.structured_model is GameMasterResponse
+    req.structured_model = StructuredResponse
+    assert responses_text_format(req)["name"] == "sparse_structured_response"
+    assert req.structured_model is StructuredResponse
+    req.capabilities = {}
+    assert responses_text_format(req)["name"] == "structured_response"
 
 
-def test_chat_adapter_and_gemini_send_same_sparse_union():
+@pytest.mark.parametrize("sparse_enabled", [False, True])
+def test_chat_adapter_and_gemini_preserve_optional_response_fields(sparse_enabled):
     import httpx
     from handlers.llm_providers.base import LLMRequest
     from handlers.llm_providers.gemini_provider import GeminiProvider
     from handlers.llm_providers.protocols.registry import adapter_for
     from unittest.mock import Mock
-    caps = {"structured_output": True, "structured_response_profile": profile()}
+    from services.structured_response_capabilities import provider_schema_options
+    caps = {"structured_output": True, "structured_response_profile": profile(sparse_enabled=sparse_enabled)}
     req = LLMRequest(model="test", messages=[], capabilities=caps, structured_model=StructuredResponse,
                      api_url="https://example.test", provider_name="gemini")
     expected = adapter_for("openai_chat_completions").encode(req, wire_stream=False)["response_format"]
-    assert expected["json_schema"]["strict"] is True
+    assert expected["json_schema"]["strict"] is False
+    assert "changes" not in expected["json_schema"]["schema"]["properties"]
+    data = {"segments": [{"text": "Hi", "emotions": ["smile"]}]}
     transport = Mock()
-    transport.post_json.return_value = httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "Hi"}]}}]})
-    GeminiProvider(http_transport=transport).generate(req)
+    transport.post_json.return_value = httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(data)}]}}]})
+    response = GeminiProvider(http_transport=transport).generate(req)
     gemini_schema = transport.post_json.call_args.kwargs["payload"]["generationConfig"]["responseJsonSchema"]
-    assert gemini_schema == expected["json_schema"]["schema"]
+    options = provider_schema_options(caps)
+    assert gemini_schema == StructuredResponse.gemini_schema_dict(**options)
+    assert "changes" not in gemini_schema["properties"]
+    segment = gemini_schema["properties"]["segments"]["items"]
+    assert segment["required"] == ["text"]
+    assert "segments" in gemini_schema["required"]
+    parsed = parse_structured_response_with_meta(response.text, profile=caps["structured_response_profile"]).response
+    assert parsed.segments[0].emotions == ["smile"]
+    assert parsed.segments[0].commands == []
 
 
 @pytest.mark.parametrize("support_intents", [False, True])
@@ -425,9 +444,8 @@ def test_reasoning_order_is_preserved_for_streaming():
 
 @pytest.mark.parametrize("provider", ["chatgpt_plan", "common", "gemini"])
 @pytest.mark.parametrize("enabled", [False, True])
-def test_chat_model_selects_wire_dto_before_any_provider_and_keeps_retry_snapshot(monkeypatch, provider, enabled):
+def test_chat_model_keeps_internal_model_for_all_providers_and_retries(monkeypatch, provider, enabled):
     from handlers.chat_handler import ChatModel
-    from schemas.sparse_structured_response import SparseStructuredResponse
     from unittest.mock import Mock
     import handlers.chat_handler as chat_module
     monkeypatch.setattr(chat_module, "_save_last_request_context", lambda *args, **kwargs: None)
@@ -456,9 +474,6 @@ def test_chat_model_selects_wire_dto_before_any_provider_and_keeps_retry_snapsho
         structured_model=StructuredResponse)
     assert len(captured) == 2
     for req in captured:
-        assert issubclass(req.structured_model, SparseStructuredResponse) == enabled
-        properties = req.structured_model.openai_response_format()["json_schema"]["schema"]["properties"]
-        assert ("changes" in properties) == enabled
-        assert ("attitude_change" in properties) != enabled
+        assert req.structured_model is StructuredResponse
         assert req.capabilities["structured_response_profile"].sparse_enabled == enabled
     assert captured[0].structured_model is captured[1].structured_model

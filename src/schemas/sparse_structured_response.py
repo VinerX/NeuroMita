@@ -1,4 +1,4 @@
-"""Compact provider DTOs compiled from the internal response and request policy."""
+"""Compact Responses DTOs compiled from the internal response and request policy."""
 from __future__ import annotations
 
 import copy
@@ -210,10 +210,3 @@ def normalize_sparse_response(
         else:
             result[name] = value
     return result
-
-
-def provider_structured_model(model_cls, capabilities):
-    profile = (capabilities or {}).get("structured_response_profile")
-    if isinstance(profile, StructuredResponseCapabilities) and profile.sparse_enabled and issubclass(model_cls, StructuredResponse):
-        return build_sparse_response_model(model_cls, profile)
-    return model_cls
