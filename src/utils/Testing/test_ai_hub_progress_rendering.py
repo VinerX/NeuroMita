@@ -77,10 +77,27 @@ def test_progress_updates_do_not_resubmit_catalog_to_settings(dialog):
     assert not any(isinstance(intent, ApplyAIHubSettingsRows) for intent in settings_model.intents)
 
 
+@pytest.mark.parametrize("running,pending", [(True, False), (False, True), (True, True)])
+def test_progress_updates_keep_refresh_disabled_while_queue_busy(dialog, running, pending):
+    widget, _, state = dialog
+    queue = {
+        "running": {"task_id": "dependency:opencv:install", "title": "OpenCV"} if running else None,
+        "pending": [{"task_id": "dependency:ffmpeg:install", "title": "FFmpeg"}] if pending else [],
+    }
+    state = replace(state, queue_state=immutable_payload(queue))
+    widget.render(state)
+    assert not widget.btn_refresh.isEnabled()
+
+    widget.render(replace(state, install_progress=20))
+
+    assert not widget.btn_refresh.isEnabled()
+
+
 def test_queue_change_still_updates_visible_jobs(dialog):
     widget, _, state = dialog
     widget.render(replace(state, queue_state=immutable_payload({"running": None, "pending": []})))
     assert widget._queue_layout.count() == 0
+    assert widget.btn_refresh.isEnabled()
 
 
 def test_catalog_revision_still_reaches_settings(dialog):

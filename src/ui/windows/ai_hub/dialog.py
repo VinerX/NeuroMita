@@ -778,7 +778,8 @@ class AIHubDialog(QDialog):
         if hasattr(self, "_check_indicator"):
             self._check_indicator.setVisible(bool(state.refreshing))
         if hasattr(self, "btn_refresh"):
-            self.btn_refresh.setEnabled(not state.refreshing)
+            queue_busy = bool(self._queue_state.get("running") or self._queue_state.get("pending"))
+            self.btn_refresh.setEnabled(not state.refreshing and not queue_busy)
         catalog_rendered = False
         if state.refreshing and not self._rows:
             self._show_scroll_loading()
