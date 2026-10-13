@@ -33,6 +33,36 @@ def test_generic_encoding_and_explicit_siwc_policy():
     assert 'temperature' not in siwc and 'max_output_tokens' not in siwc
 
 
+@pytest.mark.parametrize('role', ['user', 'system', 'developer', 'assistant'])
+@pytest.mark.parametrize('policy', [ResponsesPolicy(), ResponsesPolicy.siwc()])
+def test_images_keep_order_without_changing_text_roles_or_history(role, policy):
+    from copy import deepcopy
+    image = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,abc', 'detail': 'high'},
+             'display_role': 'assistant'}
+    messages = [{'role': role, 'content': [
+        {'type': 'text', 'text': 'before'}, image,
+        {'type': 'input_image', 'image_url': 'data:image/png;base64,def'},
+        {'type': 'text', 'text': 'after'},
+    ]}]
+    original = deepcopy(messages)
+    req = LLMRequest(model='gpt-6-luna', messages=messages)
+    payload = ResponsesAdapter(policy=policy).encode(req, wire_stream=False)
+    text_role = 'developer' if role == 'system' else role
+    text_type = 'output_text' if role == 'assistant' else 'input_text'
+    images = [{'type': 'input_image', 'image_url': 'data:image/png;base64,abc', 'detail': 'high'},
+              {'type': 'input_image', 'image_url': 'data:image/png;base64,def'}]
+    before = {'type': text_type, 'text': 'before'}
+    after = {'type': text_type, 'text': 'after'}
+    expected = ([{'role': 'user', 'content': [before, *images, after]}] if role == 'user' else [
+        {'role': text_role, 'content': [before]},
+        {'role': 'user', 'content': images},
+        {'role': text_role, 'content': [after]},
+    ])
+    assert payload['model'] == 'gpt-6-luna'
+    assert payload['input'] == expected
+    assert messages == original
+
+
 def test_decode_plain_text_and_all_tool_calls():
     result = ResponsesAdapter().decode(request(), {'status': 'completed', 'model': 'actual', 'output': [
         {'type': 'message', 'content': [{'type': 'output_text', 'text': 'hello'}]},
