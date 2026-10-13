@@ -166,3 +166,28 @@ def test_tv_event_classification_preserves_actual_player_words():
     from core.tv_observation import is_tv_observation_event
     assert not is_tv_observation_event({"tv_observation": TV, "content": [
         {"type": "text", "text": "What do you think?"}, tv_observation_part(TV)]})
+
+
+def test_context_viewer_labels_tv_event_but_keeps_player_turn_identity():
+    from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+    viewer = SimpleNamespace(_message_meta={}, _data={"character_name": "Crazy Mita"},
+        _content_plain=lambda content: str(content), _display_actor_name=lambda actor: actor)
+    marker = "[Past TV observation: already seen] "
+    event = {"role": "user", "content": marker + format_tv_observation(TV)}
+    assert ContextViewerDialog._resolve_actor(viewer, event, 0) == ("TV · YouTube", None)
+    player = {"role": "user", "content": marker + "What do you think? " + format_tv_observation(TV)}
+    assert ContextViewerDialog._resolve_actor(viewer, player, 0) == ("Player", None)
+
+
+def test_writer_keeps_tv_event_incoming_and_reply_assistant():
+    class Character:
+        def add_messages_to_history(self, messages):
+            self.messages = messages
+            return [1, 2]
+    character = Character()
+    writer = ConversationEventWriter(character_ref_resolver=lambda _: character)
+    incoming = {"role": "user", "speaker": "Crazy", "content": format_tv_observation(TV), "tv_observation": TV}
+    reply = {"role": "assistant", "speaker": "Crazy", "content": "I dislike this video"}
+    committed, failed = writer._fanout_turn(incoming, reply, ["Crazy"])
+    assert committed == ("Crazy",) and failed == ()
+    assert [m["role"] for m in character.messages] == ["user", "assistant"]
