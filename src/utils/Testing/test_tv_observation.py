@@ -143,3 +143,26 @@ def test_history_removes_duplicate_system_tv_snapshot_and_marks_past_observation
     assert "Past TV observation" in str(projected[0]["content"])
     assert str(projected).count("[TV observation]") == 1
     assert len(messages) == 3
+
+
+def test_legacy_self_authored_tv_event_is_not_assistant_history():
+    from controllers.history_controller import HistoryController
+    controller = HistoryController.__new__(HistoryController)
+    controller._time_gap_marker_threshold_seconds = lambda: 0
+    controller._action_memory_enabled = lambda: False
+    original = {"role": "assistant", "speaker": "Crazy", "target": "Crazy",
+                "content": [{"type": "text", "text": format_tv_observation(TV)},
+                            {"type": "image_url", "image_url": {"url": "frame"}}], "tv_observation": TV}
+    projected = controller._sanitize_history_for_llm(SimpleNamespace(char_id="Crazy"), [original])
+    assert projected[0]["role"] == "user"
+    assert "[To:" not in str(projected) and "Собеседник" not in str(projected)
+    assert projected[0]["content"][1]["image_url"]["url"] == "frame"
+    assert original["role"] == "assistant"
+    ui = HistoryUiProjector().project_for_ui([original])[0]
+    assert ui["role"] == "user" and "Crazy →" not in str(ui["content"])
+
+
+def test_tv_event_classification_preserves_actual_player_words():
+    from core.tv_observation import is_tv_observation_event
+    assert not is_tv_observation_event({"tv_observation": TV, "content": [
+        {"type": "text", "text": "What do you think?"}, tv_observation_part(TV)]})

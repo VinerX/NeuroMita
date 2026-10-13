@@ -1792,7 +1792,7 @@ class HistoryController(HistoryService):
         if not messages:
             return []
 
-        from core.tv_observation import format_tv_observation
+        from core.tv_observation import format_tv_observation, is_tv_observation_event
         tv_contexts = {format_tv_observation(m.get("tv_observation")) for m in messages if isinstance(m, dict) and m.get("tv_observation")}
         tv_contexts.discard("")
         owner_id = str(getattr(character, "char_id", "") or "")
@@ -1814,7 +1814,9 @@ class HistoryController(HistoryService):
                     content = content.replace(observation, "")
                 if not content.strip():
                     continue
+            tv_event = is_tv_observation_event(m)
             if m.get("tv_observation"):
+                role = "user"
                 content = self._prepend_content_prefix(content, "[Past TV observation: already seen; do not react to it again. Newer observations override this snapshot.] ")
 
             # While a turn remains in the recent history, actions belong to
@@ -1846,7 +1848,8 @@ class HistoryController(HistoryService):
                     out.extend(native_history)
                     continue
 
-            content = self._apply_llm_prefix(role, speaker, target, content)
+            if not tv_event:
+                content = self._apply_llm_prefix(role, speaker, target, content)
             if gap_marker:
                 content = self._prepend_content_prefix(content, gap_marker)
 

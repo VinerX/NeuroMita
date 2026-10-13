@@ -169,7 +169,7 @@ class ConversationEventWriter:
                 continue
 
             local = dict(event_msg)
-            local["role"] = "assistant" if self._identity_resolver.same_id(pid, speaker) else "user"
+            local["role"] = "user" if local.get("tv_observation") else ("assistant" if self._identity_resolver.same_id(pid, speaker) else "user")
             local.setdefault("sender", speaker)
 
             self._append_history_message(ch, local)
@@ -198,7 +198,7 @@ class ConversationEventWriter:
                     continue
                 local = dict(event_msg)
                 speaker = str(local.get("speaker") or "")
-                local["role"] = "assistant" if self._identity_resolver.same_id(pid, speaker) else "user"
+                local["role"] = "user" if local.get("tv_observation") else ("assistant" if self._identity_resolver.same_id(pid, speaker) else "user")
                 local.setdefault("sender", speaker)
                 local_messages.append(local)
 

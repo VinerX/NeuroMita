@@ -1307,6 +1307,10 @@ class ContextViewerDialog(QDialog):
         speaker = str(meta.get("speaker") or msg.get("speaker") or msg.get("sender") or "").strip()
         target = str(meta.get("target") or msg.get("target") or "").strip()
 
+        content = self._content_plain(msg.get("content"))
+        if content.lstrip().startswith("[Past TV observation:"):
+            return "TV · YouTube", None
+
         if not speaker or not target:
             content = self._content_plain(msg.get("content"))
             m = _RE_ACTOR_PREFIX.match(content) or _RE_SPEAKER_PREFIX.match(content)

@@ -55,3 +55,18 @@ def format_tv_observation(value: Any) -> str:
 def tv_observation_part(value: Any) -> dict:
     tv = normalize_tv_observation(value)
     return {"type": "text", "text": format_tv_observation(tv), "tv_observation": tv}
+
+
+def is_tv_observation_event(message: dict) -> bool:
+    """TV-only incoming context is an observation, not a character utterance."""
+    tv = normalize_tv_observation(message.get("tv_observation"))
+    if not tv:
+        return False
+    content = message.get("content")
+    parts = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+    context = format_tv_observation(tv)
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "text":
+            if str(part.get("text") or "").replace(context, "").strip():
+                return False
+    return True
