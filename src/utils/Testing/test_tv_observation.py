@@ -23,9 +23,9 @@ def test_tv_context_labels_source_and_separates_player_from_video():
 def test_tv_metadata_rejects_other_sources_and_nonfinite_numbers():
     assert normalize_tv_observation({"source": "mita_camera"}) == {}
     tv = normalize_tv_observation({**TV, "time_seconds": float("nan"), "frame_count": 999,
-                                   "subtitles": "x" * 2000})
+                                   "subtitles": "x" * 10000})
     assert tv["time_seconds"] == 0 and tv["frame_count"] == 8
-    assert len(tv["subtitles"]) == 512
+    assert len(tv["subtitles"]) == 4096
 
 
 def test_tv_observation_survives_history_projection_without_player_text_or_images():

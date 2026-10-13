@@ -8,7 +8,7 @@ def normalize_tv_observation(value: Any) -> dict:
     if not isinstance(value, dict) or value.get("source") != "youtube":
         return {}
     result = {key: str(value.get(key) or "")[:limit] for key, limit in
-              (("title", 500), ("author", 300), ("url", 2000), ("subtitles", 512))}
+              (("title", 500), ("author", 300), ("url", 2000), ("subtitles", 4096))}
     result["source"] = "youtube"
     for key, limit in (("time_seconds", 864000), ("frame_spacing_seconds", 1800), ("frame_count", 8)):
         try:
