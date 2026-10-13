@@ -48,12 +48,6 @@ def configure_native_tools(req, settings, tool_manager):
         excluded = set(profile.excluded_fields) - {'tool_call'}
         req.capabilities['structured_response_profile'] = replace(profile, excluded_fields=tuple(sorted(excluded)))
         req.capabilities['structured_exclude_fields'] = tuple(sorted(excluded))
-        if decision['reason']:
-            schema = tool_manager._filtered_schema(list(profile.enabled_tools))
-            req.messages = [*req.messages, {'role': 'system', 'content':
-                'Native functions are unavailable for this request. Request one enabled tool through '
-                'the JSON tool_call field {"name": "tool_name", "args": {}}. Enabled tools: '
-                + json.dumps(schema, ensure_ascii=False)}]
     return decision
 
 

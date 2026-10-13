@@ -370,7 +370,7 @@ API_TEMPLATES_DATA = [
         "settings_schema_id": "openai-responses",
         "pricing": "paid",
         "url_editable": True,
-        "test_url_editable": True,
+        "test_url_editable": False,
         "url": "https://api.openai.com/v1/responses",
         "default_model": "gpt-4o",
         "known_models": [],

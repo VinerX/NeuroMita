@@ -666,9 +666,9 @@ class VoiceoverGuiController(BaseController):
                         self.event_bus.emit(
                             Events.GUI.SHOW_INFO_MESSAGE,
                             {
-                                "title": _("Success", "Success"),
+                                "title": _("Успешно", "Success"),
                                 "message": _(
-                                    "Model {} initialized successfully!",
+                                    "Модель {} успешно инициализирована!",
                                     "Model {} initialized successfully!",
                                 ).format(model_id),
                             },
@@ -677,9 +677,9 @@ class VoiceoverGuiController(BaseController):
                         self.event_bus.emit(
                             Events.GUI.SHOW_ERROR_MESSAGE,
                             {
-                                "title": _("Error", "Error"),
+                                "title": _("Ошибка", "Error"),
                                 "message": _(
-                                    "Model initialized, but failed to activate it.",
+                                    "Модель инициализировалась, но не удалось активировать её.",
                                     "Model initialized, but failed to activate it.",
                                 ),
                             },

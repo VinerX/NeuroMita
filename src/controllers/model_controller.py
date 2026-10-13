@@ -1531,9 +1531,16 @@ class ModelController(GenerationService, ModelStateService):
         original_image_data = image_data  # kept for history storage
         image_descriptions: dict[str, str] | None = None
 
+        from core.tv_observation import normalize_tv_observation, format_tv_observation
+        tv_observation = normalize_tv_observation(game_state.get("tv_observation"))
+
         # Build context hint so the vision description model knows the image source.
         _image_context_hint = ""
-        if event_type == "camera_snapshot_result":
+        if tv_observation:
+            _image_context_hint = format_tv_observation(tv_observation)
+        elif image_source == "tv_observer":
+            _image_context_hint = "These sequential frames show a YouTube video on the in-game TV, not the player or the character camera."
+        elif event_type == "camera_snapshot_result":
             _image_context_hint = (
                 "This image was captured by the character's head-mounted camera "
                 "(their own point of view, in-game). "
@@ -1567,7 +1574,10 @@ class ModelController(GenerationService, ModelStateService):
             _is_mita_cam = image_source in ("mita_camera",) or event_type == "camera_snapshot_result"
             _is_easel = image_source == "easel" or event_type == "easel_drawing"
 
-            if _is_mita_cam:
+            if tv_observation or image_source == "tv_observer":
+                _ctx_preamble_single = "This describes the YouTube video you and the player are watching on TV. Distinguish video events and dialogue from the player and the current game world."
+                _ctx_preamble_seq = _ctx_preamble_single
+            elif _is_mita_cam:
                 _ctx_preamble_single = (
                     "The following description is what you (the character) currently see through your own eyes "
                     "(in-game camera). React naturally as if perceiving this scene yourself."
@@ -1631,7 +1641,10 @@ class ModelController(GenerationService, ModelStateService):
             images_available=bool(image_data),
             has_custom_params=has_custom_params,
             schema_reasoning=bool(effective_capabilities.get("schema_reasoning", False)),
-            sparse_enabled=bool(effective_capabilities.get("sparse_response", False)),
+            sparse_enabled=(
+                getattr(effective_preset, "dialect_id", "") == "openai_responses"
+                and bool(effective_capabilities.get("sparse_response", False))
+            ),
         )
         effective_capabilities["structured_response_profile"] = profile
         tool_decision = resolve_tool_mode(
@@ -1844,6 +1857,7 @@ class ModelController(GenerationService, ModelStateService):
                     user_input=visible_user_input,
                     image_data=original_image_data,
                     image_source=image_source,
+                    tv_observation=tv_observation,
                     req_id=req_id,
                     task_uid=task_uid,
                     trace_id=trace_id,
@@ -1920,6 +1934,7 @@ class ModelController(GenerationService, ModelStateService):
                         user_input=visible_user_input,
                         image_data=original_image_data,
                         image_source=image_source,
+                        tv_observation=tv_observation,
                         image_descriptions=image_descriptions,
                         req_id=req_id,
                         origin_message_id=origin_message_id,
@@ -2144,6 +2159,7 @@ class ModelController(GenerationService, ModelStateService):
         dialogue: Any = None,
         native_tool_call: dict | None = None,
         request_cancellation: Any = None,
+        tv_observation: dict | None = None,
     ) -> Optional[ChatGenerationResult]:
         if request_cancellation is not None:
             request_cancellation.raise_if_cancelled()
@@ -2183,6 +2199,7 @@ class ModelController(GenerationService, ModelStateService):
                             user_input=user_input,
                             image_data=image_data,
                             image_source=image_source,
+                            tv_observation=tv_observation,
                             image_descriptions=image_descriptions,
                             req_id=req_id,
                             origin_message_id=origin_message_id,
@@ -2310,6 +2327,7 @@ class ModelController(GenerationService, ModelStateService):
                 user_input=user_input,
                 image_data=image_data,
                 image_source=image_source,
+                tv_observation=tv_observation,
                 req_id=req_id,
                 task_uid=task_uid,
                 trace_id=trace_id,
@@ -2405,6 +2423,7 @@ class ModelController(GenerationService, ModelStateService):
                     user_input=user_input,
                     image_data=image_data,
                     image_source=image_source,
+                    tv_observation=tv_observation,
                     image_descriptions=_structured_image_descriptions,
                     req_id=req_id,
                     origin_message_id=origin_message_id,
@@ -2510,6 +2529,7 @@ class ModelController(GenerationService, ModelStateService):
         dialogue: Any = None,
         native_tool_call: dict | None = None,
         request_cancellation: Any = None,
+        tv_observation: dict | None = None,
     ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
@@ -2560,6 +2580,7 @@ class ModelController(GenerationService, ModelStateService):
                 user_input=user_input,
                 image_data=image_data,
                 image_source=image_source,
+                tv_observation=tv_observation,
                 image_descriptions=None,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
@@ -2759,6 +2780,7 @@ class ModelController(GenerationService, ModelStateService):
             user_input="",
             image_data=[],
             image_source=image_source,
+            tv_observation=tv_observation,
             req_id=req_id,
             task_uid=task_uid,
             trace_id=trace_id,

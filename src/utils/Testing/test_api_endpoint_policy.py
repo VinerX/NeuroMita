@@ -141,6 +141,26 @@ def test_template_can_declare_independent_test_url_override():
     )
 
 
+def test_responses_check_ignores_google_url_from_previous_template(controller, monkeypatch):
+    supervisor = SimpleNamespace(start_thread=Mock())
+    monkeypatch.setattr(module, "task_supervisor", lambda: supervisor)
+    controller._on_test_connection(
+        Event(
+            Events.ApiPresets.TEST_CONNECTION,
+            {
+                "id": 1001,
+                "base": 13,
+                "url": "https://api.openai.com/v1/responses",
+                "test_url": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+                "protocol_id": "openai_responses_default",
+                "key": "test-key",
+            },
+        )
+    )
+    _, template, _ = supervisor.start_thread.call_args.kwargs["args"]
+    assert template.test_url == "https://api.openai.com/v1/models"
+
+
 @pytest.mark.parametrize(
     "url",
     [

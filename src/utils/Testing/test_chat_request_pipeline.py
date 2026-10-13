@@ -419,6 +419,24 @@ class ChatRequestPipelineTests(unittest.TestCase):
         failure = next(item for item in failures if item.get("error_details"))
         self.assertEqual(failure["error_details"]["code"], "structured_schema_validation_failed")
 
+    def test_tv_reaction_keeps_context_in_request_without_second_system_history_copy(self):
+        from core.tv_observation import format_tv_observation
+        tv = {"source": "youtube", "title": "Video", "author": "Channel", "frame_count": 0}
+        system_input = format_tv_observation(tv)
+        generation = _ImmediateGeneration()
+        services().register(GenerationService, generation, replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
+        with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
+            result = self.controller._run_request("", character_id="Crazy", event_type="react",
+                system_input=system_input, game_state={"tv_observation": tv},
+                policy={"echo_to_ui": True, "write_to_history": True})
+        self.assertEqual(result, "ok")
+        payloads = [call.args[1] for call in emit.call_args_list
+            if len(call.args) >= 2 and call.args[0] == Events.GUI.UPDATE_CHAT_UI]
+        self.assertFalse(any(item.get("role") == "system" for item in payloads))
+        self.assertTrue(any(any(part.get("tv_observation") for part in item.get("response", [])
+            if isinstance(part, dict)) for item in payloads if isinstance(item.get("response"), list)))
+
     def test_non_stream_request_does_not_create_presentation_coalescer(self):
         services().register(GenerationService, _ImmediateGeneration(), replace=True)
         self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})

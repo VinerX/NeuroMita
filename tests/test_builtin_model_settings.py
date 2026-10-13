@@ -19,10 +19,18 @@ from model_settings.service import ModelSettingsService
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_all_definitions_match_pre_migration_snapshot():
+def historical_definition(data):
+    historical = deepcopy(data)
+    for field in historical['fields']:
+        if field['id'] == 'max_tokens':
+            field['default'] = 2500
+    return historical
+
+
+def test_definitions_match_pre_migration_snapshot_except_output_token_default():
     expected = json.loads(Path(__file__).with_name('model_settings_builtin_snapshot.json').read_text())
     actual = {
-        identifier: sha256(json.dumps(data, ensure_ascii=False, sort_keys=True,
+        identifier: sha256(json.dumps(historical_definition(data), ensure_ascii=False, sort_keys=True,
                                      separators=(',', ':'), allow_nan=False).encode()).hexdigest()
         for identifier, data in BUILTIN_SCHEMAS.items()
     }
@@ -30,7 +38,7 @@ def test_all_definitions_match_pre_migration_snapshot():
     assert not list((ROOT / 'src/model_settings/defaults').glob('*.json'))
     for identifier, data in BUILTIN_SCHEMAS.items():
         assert identifier == SettingsSchema.from_dict(data).data['id']
-        assert is_bundled_json_copy(data)
+        assert is_bundled_json_copy(historical_definition(data))
 
 
 def test_cold_catalog_does_not_read_or_write_json(tmp_path):
@@ -61,11 +69,11 @@ def test_returned_catalog_cannot_mutate_builtin_or_next_read(tmp_path):
 
 def test_factory_copy_does_not_hide_corrected_builtin_at_same_revision(tmp_path, monkeypatch):
     identifier = 'openai-compatible'
-    old = deepcopy(BUILTIN_SCHEMAS[identifier])
+    old = historical_definition(BUILTIN_SCHEMAS[identifier])
     path = tmp_path / 'renamed-factory-copy.json'
     path.write_text(json.dumps(old, indent=4), encoding='utf-8-sig')
     saved = path.read_bytes()
-    corrected = deepcopy(old)
+    corrected = deepcopy(BUILTIN_SCHEMAS[identifier])
     corrected['fields'][0]['maximum'] = 1.5
     monkeypatch.setitem(BUILTIN_SCHEMAS, identifier, corrected)
     assert SchemaRepository(tmp_path).get(identifier).data == corrected

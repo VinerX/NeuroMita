@@ -1104,12 +1104,15 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         *,
         ready_timeout: float,
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
+        diagnostics: list[str] | None = None,
     ) -> _WorkerRuntimeValidationResult:
         if not self._wait_all_ready(worker, ready_timeout):
             detail = worker.last_error or getattr(worker, "last_status", "") or (
                 f"exitcode={getattr(worker.proc, 'exitcode', None)}"
             )
             logger.error(f"Candidate AI runtime did not become ready: {detail}")
+            if diagnostics is not None:
+                diagnostics.append(f"Candidate AI runtime did not become ready: {detail}")
             return _WorkerRuntimeValidationResult(process_ready=False)
 
         failed_services: set[str] = set()
@@ -1135,6 +1138,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     f"{service_name}.{method}: {detail}"
                 )
                 logger.error(message)
+                if diagnostics is not None:
+                    diagnostics.append(message)
                 failed_services.add(service_name)
                 proc = worker.proc
                 if proc is None or not proc.is_alive():
@@ -1156,8 +1161,11 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
         reuse_validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
         promote: bool = True,
+        diagnostics: list[str] | None = None,
     ) -> bool:
         if self._runtime_switching.is_active():
+            if diagnostics is not None:
+                diagnostics.append(self._runtime_switching.reason())
             return False
         target_paths = tuple(composition.paths)
         target_probes = tuple(getattr(composition, "probe_modules", ()) or ())
@@ -1200,6 +1208,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 return True
             except Exception as exc:
                 logger.error(f"Failed to promote shared AI runtime contract: {format_exception(exc)}")
+                if diagnostics is not None:
+                    diagnostics.append(f"Failed to promote shared AI runtime contract: {format_exception(exc)}")
                 return False
 
         def restore_registry(snapshot) -> None:
@@ -1249,6 +1259,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
 
         with self._runtime_switch_lock:
             if self._runtime_switching.is_active():
+                if diagnostics is not None:
+                    diagnostics.append(self._runtime_switching.reason())
                 return False
             if self.mode == "shared":
                 with self._lock:
@@ -1265,6 +1277,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         current,
                         ready_timeout=bootstrap_timeout,
                         validations=reuse_validations,
+                        diagnostics=diagnostics,
                     ):
                         return False
                     return promote_registry(cleanup=True)
@@ -1357,6 +1370,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         candidate,
                         ready_timeout=bootstrap_timeout,
                         validations=validations,
+                        diagnostics=diagnostics,
                     ):
                         candidate.stop(timeout=1.0)
                         candidate = None
@@ -1425,6 +1439,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         logger.error(
                             f"Candidate AI worker '{service_name}' did not become ready: {detail}"
                         )
+                        if diagnostics is not None:
+                            diagnostics.append(f"Candidate AI worker '{service_name}' did not become ready: {detail}")
                         candidate.stop(timeout=1.0)
                         return False
                     candidates[service_name] = candidate
@@ -1436,6 +1452,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         candidate,
                         ready_timeout=bootstrap_timeout,
                         validations=(validation,),
+                        diagnostics=diagnostics,
                     ):
                         return False
 
@@ -2130,11 +2147,14 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         validation_payload: dict[str, Any] | None = None,
         validation_timeout: float | None = None,
         runtime_slot: str | None = None,
+        diagnostics: list[str] | None = None,
     ) -> bool:
         service_name = str(service or "").strip().lower()
         model_id = str(item_id or "").strip()
         slot = self._runtime_slot_for(service_name, model_id, runtime_slot)
         if not service_name or not model_id:
+            if diagnostics is not None:
+                diagnostics.append("Service and model ID are required for runtime activation")
             return False
 
         record = self._environments.active_for(
@@ -2145,6 +2165,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             logger.error(
                 f"Managed environment is not installed for service={service_name} item={model_id}"
             )
+            if diagnostics is not None:
+                diagnostics.append(f"Managed environment is not installed for service={service_name} item={model_id}")
             return False
 
         # Слоты активируются параллельно (эмбеддинги и реранкер греются в фоне
@@ -2157,6 +2179,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 item_id=model_id,
             )
             if record is None:
+                if diagnostics is not None:
+                    diagnostics.append(f"Managed environment is no longer installed for service={service_name} item={model_id}")
                 return False
             selection = self._environments.selection_with(slot, record)
             try:
@@ -2168,6 +2192,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     f"Cannot compose shared runtime for service={service_name} "
                     f"item={model_id}: {format_exception(exc)}"
                 )
+                if diagnostics is not None:
+                    diagnostics.append(f"Cannot compose runtime for {service_name}/{model_id}: {format_exception(exc)}")
                 return False
 
             candidate_validations = dict(self._runtime_validations)
@@ -2196,6 +2222,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 selection=selection,
                 validations=self._validation_sequence(candidate_validations),
                 reuse_validations=requested_validation,
+                diagnostics=diagnostics,
             ):
                 return False
             self._runtime_validations = candidate_validations
@@ -2208,6 +2235,11 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             logger.info(
                 f"Activated shared runtime for service={service_name} item={model_id}: "
                 f"{record.logical_id}@{record.revision_id}"
+            )
+        elif diagnostics is not None:
+            diagnostics.append(
+                str(getattr(worker, "last_error", "") or getattr(worker, "last_status", ""))
+                or f"AI worker did not become ready for service={service_name} item={model_id}"
             )
         return ready
 

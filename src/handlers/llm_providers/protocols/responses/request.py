@@ -43,17 +43,32 @@ def _content(content: Any, role: str) -> str | list[dict[str, Any]]:
         kind = part.get('type') if isinstance(part, Mapping) else None
         if kind in {'text', 'input_text', 'output_text'}:
             result.append({'type': 'output_text' if role == 'assistant' else 'input_text', 'text': str(part.get('text') or '')})
-        elif kind == 'image_url' and role == 'user':
+        elif kind == 'image_url':
             image = part.get('image_url')
             image = image if isinstance(image, Mapping) else {'url': image}
             result.append({'type': 'input_image', 'image_url': image.get('url'), **({'detail': image['detail']} if image.get('detail') else {})})
-        elif kind in {'input_image', 'input_file'} and role == 'user':
+        elif kind == 'input_image' or (kind == 'input_file' and role == 'user'):
             result.append(dict(part))
         elif kind == 'file' and role == 'user':
             result.append({'type': 'input_file', **dict(part.get('file') or {})})
         else:
             raise ValueError(f'Unsupported Responses content type: {kind}')
     return result
+
+
+def _message_items(content: Any, role: str) -> list[dict[str, Any]]:
+    encoded = _content(content, role)
+    if not encoded:
+        return []
+    if isinstance(encoded, str):
+        return [{'role': role, 'content': encoded}]
+    items: list[dict[str, Any]] = []
+    for part in encoded:
+        part_role = 'user' if part['type'] == 'input_image' else role
+        if not items or items[-1]['role'] != part_role:
+            items.append({'role': part_role, 'content': []})
+        items[-1]['content'].append(part)
+    return items
 
 
 def encode_request(req: Any, *, wire_stream: bool, policy: ResponsesPolicy) -> dict:
@@ -87,9 +102,7 @@ def encode_request(req: Any, *, wire_stream: bool, policy: ResponsesPolicy) -> d
             if role != 'assistant' or not isinstance(reasoning, Mapping) or reasoning.get('type') != 'reasoning':
                 raise ValueError('Invalid Responses reasoning history item')
             items.append(deepcopy(dict(reasoning)))
-        content = _content(message.get('content'), role)
-        if content:
-            items.append({'role': role, 'content': content})
+        items.extend(_message_items(message.get('content'), role))
         for call in message.get('tool_calls') or []:
             function = call.get('function') or call
             call_id = call.get('id')

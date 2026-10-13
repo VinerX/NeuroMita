@@ -60,6 +60,26 @@ class _IndicatorButtonStub:
 
 
 class VoiceoverGuiControllerTests(unittest.TestCase):
+    def test_initialization_success_dialog_uses_current_language(self):
+        from localization import translate_for_language
+
+        for language, title, message in (
+            ("RU", "Успешно", "Модель edge_tts_rvc_cuda успешно инициализирована!"),
+            ("EN", "Success", "Model edge_tts_rvc_cuda initialized successfully!"),
+        ):
+            with self.subTest(language=language):
+                controller, bus = self._make_controller()
+                controller._loading_dialog = object()
+                controller._loading_model_id = "edge_tts_rvc_cuda"
+                controller._ui = lambda fn: fn()
+                controller._close_loading_dialog = lambda: None
+                controller._save_setting = lambda *_args: None
+                controller._sync_everything = lambda **_kwargs: None
+                controller._select_model_async = lambda _id, done, **_kwargs: done(True)
+                with patch("controllers.gui.voiceover_controller._", side_effect=lambda ru, en: translate_for_language(language, ru, en)):
+                    controller._on_finish_loading(Event(Events.Audio.FINISH_MODEL_LOADING, {"model_id": "edge_tts_rvc_cuda"}))
+                self.assertEqual(bus.emitted, [(Events.GUI.SHOW_INFO_MESSAGE, {"title": title, "message": message})])
+
     def _make_controller(self) -> tuple[VoiceoverGuiController, _EventBusStub]:
         bus = _EventBusStub()
         controller = VoiceoverGuiController.__new__(VoiceoverGuiController)

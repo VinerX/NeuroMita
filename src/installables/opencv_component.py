@@ -17,7 +17,7 @@ from core.runtime_environments import runtime_environments
 from utils import getTranslationVariant as _
 
 
-_PACKAGE = "opencv-python"
+_PACKAGE = "opencv-python==4.11.0.86"
 _IMPORT_NAME = "cv2"
 
 

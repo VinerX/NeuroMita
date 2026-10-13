@@ -198,7 +198,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "maxOutputTokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -630,7 +630,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "maxOutputTokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -1061,7 +1061,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "maxOutputTokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -1474,7 +1474,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "maxOutputTokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -1938,7 +1938,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_completion_tokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -2252,7 +2252,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_tokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -2567,7 +2567,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_tokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -2891,7 +2891,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_tokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -3142,7 +3142,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                 "path": [
                     "max_output_tokens"
                 ],
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": False,
                 "minimum": 16
             },
@@ -3336,7 +3336,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_tokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },
@@ -3838,7 +3838,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_tokens"
                 ],
                 "type": "integer",
-                "default": 2500,
+                "default": 5000,
                 "enabled_by_default": True,
                 "minimum": 1
             },

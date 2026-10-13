@@ -11,10 +11,17 @@ if str(PROJECT_SRC) not in sys.path:
 from game_connections.handlers.actions.create_task import (
     _build_react_prompt,
     _normalise_reaction_events,
+    _should_label_as_mita_camera,
 )
 
 
 class ReactionBatchPromptTests(unittest.TestCase):
+    def test_standard_tv_reaction_keeps_tv_image_provenance(self):
+        for image_payload in ({"image_paths": ["tv.png"]}, {"image_base64_list": ["frame"]}):
+            self.assertFalse(_should_label_as_mita_camera("react", {**image_payload, "image_source": "tv_observer"}))
+            self.assertTrue(_should_label_as_mita_camera("react", image_payload))
+            self.assertTrue(_should_label_as_mita_camera("react", {**image_payload, "image_source": "mita_camera"}))
+
     def test_legacy_single_reaction_is_preserved(self):
         lines, reason, duration, events = _build_react_prompt(
             {

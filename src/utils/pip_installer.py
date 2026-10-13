@@ -393,6 +393,8 @@ class PipInstaller:
                 "--index-strategy",
             )
             raw_extra = list(extra_args or [])
+            if "--no-deps" in raw_extra:
+                compile_cmd.append("--no-deps")
             index = 0
             while index < len(raw_extra):
                 value = str(raw_extra[index])

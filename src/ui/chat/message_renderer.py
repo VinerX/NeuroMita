@@ -23,6 +23,8 @@ from ui.chat.message_actions_presentation import (
     ViewChatSampleContext,
 )
 from ui.chat.structured_panel import StructuredOutputPanel
+from ui.chat.image_series_widget import ImageSeriesWidget
+from core.tv_observation import normalize_tv_observation
 
 
 def _strip_hidden_image_descriptions(text: str) -> str:
@@ -103,6 +105,11 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
         lay.setSpacing(0)
         lay.addStretch()
         lay.addWidget(panel)
+    elif role == "event":
+        lay.setContentsMargins(0, 4, 0, 6)
+        lay.addStretch()
+        lay.addWidget(panel)
+        lay.addStretch()
     else:
         lay.setContentsMargins(0, 2, 0, 4)
         lay.addWidget(panel)
@@ -418,6 +425,7 @@ def insert_message(
     text_parts = []
     speaker_name = ""
     images = []
+    tv_observation = {}
 
     if isinstance(content, list):
         for item in content:
@@ -431,7 +439,11 @@ def insert_message(
                     or ""
                 )
             elif item.get("type") == "text":
-                text_parts.append(item.get("text") or item.get("content", ""))
+                observation = normalize_tv_observation(item.get("tv_observation"))
+                if observation:
+                    tv_observation = observation
+                else:
+                    text_parts.append(item.get("text") or item.get("content", ""))
             elif item.get("type") == "image_url":
                 image_url = item.get("image_url", {}).get("url", "")
                 if image_url:
@@ -591,52 +603,32 @@ def insert_message(
     }
     rendered_urls = set()
 
-    # Images from the current live message or reconstructed history.
-    for image_entry in images:
-        image_url = (
-            image_entry.get("url", "")
-            if isinstance(image_entry, dict)
-            else str(image_entry or "")
-        )
-        image_key = str(image_url or "")
-        img_info = ui_image_by_url.get(image_key, {})
-        image_role = (
-            img_info.get("display_role")
-            or (
-                image_entry.get("display_role")
-                if isinstance(image_entry, dict)
-                else None
-            )
-            or role
-        )
-        img_widget = ImageWidget(
-            image_url,
-            role=image_role,
-            max_bubble_width=max_bw,
-            description=img_info.get("description", ""),
-            parent=chat_parent,
-        )
-        wrapped_img = _wrap_panel_aligned(img_widget, image_role, parent=chat_parent)
-        gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
-        if image_key:
-            rendered_urls.add(image_key)
-
-    # Legacy fallback for history entries that still only have UI-side image metadata.
-    for img_info in ui_image_entries:
-        image_url = str(img_info.get("url", "") or "")
-        if not image_url or image_url in rendered_urls:
-            continue
-        img_widget = ImageWidget(
-            image_url,
-            role=img_info.get("display_role") or role,
-            max_bubble_width=max_bw,
-            description=img_info.get("description", ""),
-            parent=chat_parent,
-        )
-        wrapped_img = _wrap_panel_aligned(
-            img_widget, img_info.get("display_role") or role, parent=chat_parent
-        )
-        gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
+    entries = []
+    for image in images:
+        url = image.get("url", "") if isinstance(image, dict) else str(image or "")
+        if url:
+            info = ui_image_by_url.get(url, {})
+            entries.append({"url": url, "description": info.get("description", ""),
+                            "display_role": info.get("display_role") or image.get("display_role") or role})
+            rendered_urls.add(url)
+    for info in ui_image_entries:
+        url = str(info.get("url", "") or "")
+        if url and url not in rendered_urls:
+            entries.append(info)
+            rendered_urls.add(url)
+    if tv_observation and not bool(gui._get_setting("SHOW_SYSTEM_MESSAGES", False)):
+        return
+    if tv_observation or len(entries) > 1:
+        card = ImageSeriesWidget(entries, tv_observation=tv_observation, max_width=max_bw, parent=chat_parent)
+        gui.chat_window.add_message_widget(_wrap_panel_aligned(card, "event" if tv_observation else role,
+                                                              parent=chat_parent), at_start=insert_at_start)
+    else:
+        for info in entries:
+            image_role = info.get("display_role") or role
+            widget = ImageWidget(info["url"], role=image_role, max_bubble_width=max_bw,
+                                 description=info.get("description", ""), parent=chat_parent)
+            gui.chat_window.add_message_widget(_wrap_panel_aligned(widget, image_role, parent=chat_parent),
+                                              at_start=insert_at_start)
 
 
 def _stream_states(gui) -> dict:

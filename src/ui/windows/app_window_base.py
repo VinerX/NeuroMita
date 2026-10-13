@@ -746,8 +746,13 @@ class AppWindowBase(QMainWindow):
                 for image in (request.get("image_data") or [])
                 if isinstance(image, (bytes, bytearray))
             ]
-            if not text and ui_images:
-                text = "Изображение из Unity"
+            from core.tv_observation import normalize_tv_observation, tv_observation_part
+            tv_observation = normalize_tv_observation((request.get("game_state") or {}).get("tv_observation"))
+            content = ([{"type": "text", "text": text}] if text else [])
+            if tv_observation:
+                content.append(tv_observation_part(tv_observation))
+            elif not text and ui_images:
+                content.append({"type": "text", "text": "Изображение из Unity"})
             created_at = float(record.get("created_at") or 0)
             message_time = (
                 datetime.datetime.fromtimestamp(created_at).strftime(
@@ -759,7 +764,7 @@ class AppWindowBase(QMainWindow):
             messages.append(
                 {
                     "role": "user",
-                    "content": text,
+                    "content": content,
                     "time": message_time,
                     "message_id": message_id,
                     "delivery_error": str(record.get("error") or ""),

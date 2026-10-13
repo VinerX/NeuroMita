@@ -242,12 +242,80 @@ def test_schema_fallback_restores_profile_for_retry_and_does_not_mutate_input():
     messages = [{'role': 'user', 'content': 'calculate'}]
     req.messages = messages
     manager = SimpleNamespace(_filtered_schema=lambda _: [{'name': 'calculator', 'parameters': {}}])
-    configure_native_tools(req, {}, manager)
+    decision = configure_native_tools(req, {}, manager)
     assert req.tools_mode == 'schema'
     assert 'tool_call' not in req.capabilities['structured_response_profile'].excluded_fields
     assert 'tool_call' in original.excluded_fields
-    assert len(req.messages) == 2
-    assert len(messages) == 1
+    assert decision['effective'] == 'schema'
+    assert decision['reason'] == 'native_protocol_unsupported'
+    assert req.messages is messages
+    assert req.messages == [{'role': 'user', 'content': 'calculate'}]
+
+
+@pytest.mark.parametrize('mode,dialect,effective', [
+    ('schema', 'openai_responses', 'schema'),
+    ('native', 'gemini_generate_content', 'schema'),
+    ('native', 'openai_responses', 'native'),
+])
+def test_tool_policy_preserves_single_prompt_catalog(mode, dialect, effective):
+    from services.native_tool_calls import configure_native_tools
+    req = request()
+    req.dialect_id = dialect
+    req.capabilities['tools_native'] = True
+    req.messages = [{'role': 'system', 'content': '[Available Tools]\ncalculator(value: integer)'}]
+    original = req.messages
+    manager = SimpleNamespace(_filtered_schema=lambda _: [{'name': 'calculator', 'parameters': {}}])
+    decision = configure_native_tools(req, {'TOOLS_MODE': mode}, manager)
+    assert req.messages is original
+    assert decision['effective'] == effective
+    assert req.extra['tool_mode'] == req.capabilities['tool_mode'] == decision
+    assert req.tools_on == (effective == 'native')
+    assert bool(req.tools_payload) == (effective == 'native')
+    assert ('tool_call' in req.capabilities['structured_response_profile'].excluded_fields) == (effective == 'native')
+    prompt = '\n'.join(message['content'] for message in req.messages)
+    assert prompt.count('[Available Tools]') == 1
+    assert 'Native functions are unavailable' not in prompt
+    assert 'Enabled tools:' not in prompt
+
+
+def test_prompt_builder_owns_schema_catalog_through_tool_continuation(monkeypatch):
+    from controllers.prompt_controller import PromptController
+    from managers.tools.tool_manager import ToolManager
+    from services.native_tool_calls import configure_native_tools
+    from utils.structured_response_parser import parse_structured_response_with_meta
+
+    controller = object.__new__(PromptController)
+    monkeypatch.setattr(controller, '_setup_character_for_prompt', lambda *_a, **_kw: None)
+    monkeypatch.setattr(controller, '_apply_reply_defaults', lambda *_a: None)
+    monkeypatch.setattr(controller, '_resolve_examples_profile', lambda *_a: 'none')
+    character = SimpleNamespace(
+        main_template_path_relative='main', custom_params=[], char_id='test',
+        set_variable=lambda *_a: None,
+        dsl_interpreter=SimpleNamespace(
+            process_main_template=lambda *_a, **_kw: (['Base instructions'], []),
+            get_prompt_feature=lambda _name, default: default,
+        ),
+    )
+    caps = {'structured_output': True, 'structured_response_profile': profile(),
+            'tools_prompt': 'calculator(expression: string)'}
+    stable, volatile, _ = controller._build_system_messages(character, 'message', True, capabilities=caps)
+    req = request()
+    req.messages = stable + volatile + [{'role': 'user', 'content': 'Calculate 2 + 2'}]
+    req.dialect_id = 'gemini_generate_content'
+    manager = ToolManager()
+    configure_native_tools(req, {}, manager)
+    response = parse_structured_response_with_meta(
+        '{"tool_call":{"name":"calculator","args":{"expression":"2 + 2"}}}'
+    ).response
+    result = manager.run(response.tool_call.name, response.tool_call.args)
+    assert result == '4'
+    req.messages.append({'role': 'system', 'content': 'Tool result: ' + result})
+    configure_native_tools(req, {}, manager)
+    prompt = '\n'.join(message['content'] for message in req.messages)
+    assert prompt.count('[Available Tools]') == 1
+    assert 'Native functions are unavailable' not in prompt
+    assert 'Enabled tools:' not in prompt
+    assert 'tool_call' not in req.capabilities['structured_response_profile'].excluded_fields
 
 
 def test_bridge_rejects_replayed_native_call_id():
