@@ -616,6 +616,8 @@ def insert_message(
         if url and url not in rendered_urls:
             entries.append(info)
             rendered_urls.add(url)
+    if tv_observation and not bool(gui._get_setting("SHOW_SYSTEM_MESSAGES", False)):
+        return
     if tv_observation or len(entries) > 1:
         card = ImageSeriesWidget(entries, tv_observation=tv_observation, max_width=max_bw, parent=chat_parent)
         gui.chat_window.add_message_widget(_wrap_panel_aligned(card, "event" if tv_observation else role,

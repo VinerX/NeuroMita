@@ -21,11 +21,11 @@ class ImageSeriesWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         if tv:
-            self.setStyleSheet(self.styleSheet() + "QFrame#imageSeries { background: #181f2b; border-color: #405a70; } QFrame#imageSeries QLabel { color: #c8d7e4; } QFrame#imageSeries QPushButton { background: #253448; border-color: #405a70; color: #c8d7e4; }")
+            self.setStyleSheet(self.styleSheet() + "QFrame#imageSeries { background: #2b2033; border-color: #755581; } QFrame#imageSeries QLabel { color: #eadced; } QFrame#imageSeries QPushButton { background: #49324f; border-color: #755581; color: #eadced; }")
         title = (_("Событие · Просмотр TV", "Event · TV viewing") if tv else _("Серия изображений", "Image sequence"))
         title += f" · {len(images)} " + _("кадров", "frames")
         header = QLabel(title)
-        header.setStyleSheet("font-weight: bold; color: " + ("#9fc5e3" if tv else "#e0cbe9") + "; border: none;")
+        header.setStyleSheet("font-weight: bold; color: " + ("#e5b7e5" if tv else "#e0cbe9") + "; border: none;")
         layout.addWidget(header)
         if tv:
             info = QLabel(f'{tv["title"]}\n{tv["author"] or _("Автор неизвестен", "Unknown author")} · '
