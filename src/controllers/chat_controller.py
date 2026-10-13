@@ -696,7 +696,9 @@ class ChatController(ChatService, GenerationActivityService):
                     "surface_character_ids": surface_character_ids,
                 }, delivery=EventDelivery.ORDERED)
 
-            if image_data and eff_policy.echo_to_ui and not images_shown:
+            from core.tv_observation import normalize_tv_observation, tv_observation_part
+            tv_observation = normalize_tv_observation((game_state or {}).get("tv_observation"))
+            if (image_data or tv_observation) and eff_policy.echo_to_ui and not images_shown:
                 img_display_role = "assistant" if image_source == "mita_camera" else "user"
                 img_content = [
                     {
@@ -704,11 +706,11 @@ class ChatController(ChatService, GenerationActivityService):
                         "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"},
                         "display_role": img_display_role,
                     }
-                    for img in image_data
+                    for img in (image_data or [])
                 ]
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": img_display_role,
-                    "response": img_content,
+                    "response": ([tv_observation_part(tv_observation)] if tv_observation else []) + img_content,
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",

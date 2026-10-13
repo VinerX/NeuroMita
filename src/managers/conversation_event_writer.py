@@ -218,6 +218,7 @@ class ConversationEventWriter:
         user_input: str,
         image_data: list[Any],
         image_source: str,
+        tv_observation: dict | None = None,
         image_descriptions: dict[str, str] | None,
         event_type: str,
         req_id: str | None,
@@ -226,13 +227,17 @@ class ConversationEventWriter:
         has_text = bool(str(user_input or "").strip())
         has_images = bool(image_data)
 
-        if not has_text and not has_images:
+        if not has_text and not has_images and not tv_observation:
             return None
 
         chunks: list[dict] = []
 
         if has_text:
             chunks.append({"type": "text", "text": str(user_input)})
+
+        if tv_observation:
+            from core.tv_observation import format_tv_observation
+            chunks.append({"type": "text", "text": format_tv_observation(tv_observation)})
 
         for img in image_data or []:
             if isinstance(img, bytes):
@@ -261,6 +266,9 @@ class ConversationEventWriter:
             "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "content": chunks,
         }
+        if tv_observation:
+            from core.tv_observation import normalize_tv_observation
+            msg["tv_observation"] = normalize_tv_observation(tv_observation)
         if image_source:
             msg["image_source"] = image_source
         if image_descriptions:
@@ -360,6 +368,7 @@ class ConversationEventWriter:
         user_input: str,
         image_data: list[Any],
         image_source: str = "",
+        tv_observation: dict | None = None,
         image_descriptions: dict[str, str] | None = None,
         req_id: str | None,
         origin_message_id: str | None,
@@ -406,6 +415,7 @@ class ConversationEventWriter:
                 user_input=user_input,
                 image_data=image_data,
                 image_source=image_source,
+                tv_observation=tv_observation,
                 image_descriptions=image_descriptions,
                 event_type=event_type,
                 req_id=req_id,
