@@ -100,3 +100,46 @@ def test_frame_window_preserves_wide_spacing_and_timestamps():
     assert normalized["frame_spacing_seconds"] == 15
     assert normalized["frame_times_seconds"] == [95, 110, 125]
     assert "95.0, 110.0, 125.0" in format_tv_observation(value)
+
+
+def test_tv_system_visibility_keeps_player_words(monkeypatch):
+    from PyQt6.QtWidgets import QApplication, QWidget
+    from ui.chat import message_renderer as renderer
+    from ui.chat.image_series_widget import ImageSeriesWidget
+    app = QApplication.instance() or QApplication([])
+    host = QWidget()
+    widgets = []
+    text = []
+    class Bubble(QWidget):
+        def __init__(self, **kwargs):
+            super().__init__(kwargs.get("parent"))
+            text.append(kwargs["content_text"])
+    monkeypatch.setattr(renderer, "MessageWidget", Bubble)
+    settings = {"SHOW_SYSTEM_MESSAGES": False, "SHOW_STRUCTURED_IN_GUI": False}
+    gui = SimpleNamespace(_get_setting=lambda key, default=None: settings.get(key, default),
+        chat_window=SimpleNamespace(get_layout_parent=lambda: host,
+            add_message_widget=lambda widget, **kwargs: widgets.append(widget)))
+    content = [{"type": "text", "text": "Player words"}, tv_observation_part(TV)]
+    renderer.insert_message(gui, "user", content)
+    assert text == ["Player words"]
+    assert not host.findChildren(ImageSeriesWidget)
+    settings["SHOW_SYSTEM_MESSAGES"] = True
+    renderer.insert_message(gui, "user", [tv_observation_part(TV)])
+    assert len(host.findChildren(ImageSeriesWidget)) == 1
+    host.close()
+
+
+def test_history_removes_duplicate_system_tv_snapshot_and_marks_past_observation():
+    from controllers.history_controller import HistoryController
+    controller = HistoryController.__new__(HistoryController)
+    controller._time_gap_marker_threshold_seconds = lambda: 0
+    controller._action_memory_enabled = lambda: False
+    context = format_tv_observation(TV)
+    messages = [{"role": "system", "content": context},
+        {"role": "user", "content": [{"type": "text", "text": context}], "tv_observation": TV},
+        {"role": "assistant", "content": "Already commented"}]
+    projected = controller._sanitize_history_for_llm(SimpleNamespace(char_id="Crazy"), messages)
+    assert len(projected) == 2
+    assert "Past TV observation" in str(projected[0]["content"])
+    assert str(projected).count("[TV observation]") == 1
+    assert len(messages) == 3

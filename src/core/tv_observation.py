@@ -10,7 +10,7 @@ def normalize_tv_observation(value: Any) -> dict:
     result = {key: str(value.get(key) or "")[:limit] for key, limit in
               (("title", 500), ("author", 300), ("url", 2000), ("subtitles", 512))}
     result["source"] = "youtube"
-    for key, limit in (("time_seconds", 864000), ("frame_spacing_seconds", 120), ("frame_count", 8)):
+    for key, limit in (("time_seconds", 864000), ("frame_spacing_seconds", 1800), ("frame_count", 8)):
         try:
             number = float(value.get(key) or 0)
             result[key] = min(limit, max(0, number)) if math.isfinite(number) else 0
