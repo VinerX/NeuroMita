@@ -92,3 +92,11 @@ def test_tv_card_survives_database_codec_roundtrip():
     visible_text = [part for part in projected["content"] if part.get("type") == "text" and not part.get("tv_observation")]
     assert visible_text == [{"type": "text", "text": "My words"}]
     assert len([part for part in projected["content"] if part.get("tv_observation")]) == 1
+
+
+def test_frame_window_preserves_wide_spacing_and_timestamps():
+    value = {**TV, "frame_spacing_seconds": 15, "frame_times_seconds": [95, 110, 125]}
+    normalized = normalize_tv_observation(value)
+    assert normalized["frame_spacing_seconds"] == 15
+    assert normalized["frame_times_seconds"] == [95, 110, 125]
+    assert "95.0, 110.0, 125.0" in format_tv_observation(value)

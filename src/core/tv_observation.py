@@ -10,12 +10,23 @@ def normalize_tv_observation(value: Any) -> dict:
     result = {key: str(value.get(key) or "")[:limit] for key, limit in
               (("title", 500), ("author", 300), ("url", 2000), ("subtitles", 512))}
     result["source"] = "youtube"
-    for key, limit in (("time_seconds", 864000), ("frame_spacing_seconds", 2), ("frame_count", 8)):
+    for key, limit in (("time_seconds", 864000), ("frame_spacing_seconds", 120), ("frame_count", 8)):
         try:
             number = float(value.get(key) or 0)
             result[key] = min(limit, max(0, number)) if math.isfinite(number) else 0
         except (TypeError, ValueError, OverflowError):
             result[key] = 0
+    times = value.get("frame_times_seconds")
+    if isinstance(times, list):
+        clean_times = []
+        for time in times[:8]:
+            try:
+                number = float(time)
+                if math.isfinite(number) and number >= 0:
+                    clean_times.append(min(864000, number))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        result["frame_times_seconds"] = clean_times
     result["frame_count"] = int(result["frame_count"])
     result["frame_order"] = "oldest_first"
     return result
@@ -34,6 +45,8 @@ def format_tv_observation(value: Any) -> str:
             'They are not images uploaded by the player or your own camera view. '
             "Distinguish the player's current words from the video dialogue. "
             'Do not assume that events shown in the video happened to you in the game.')
+    if tv.get("frame_times_seconds"):
+        text += "\nFrame playback timestamps (seconds, same order as images): " + ", ".join(f"{time:.1f}" for time in tv["frame_times_seconds"])
     if tv["subtitles"]:
         text += f'\nHeard on TV (Youtube): {tv["subtitles"]}'
     return text + '\n[/TV observation]'

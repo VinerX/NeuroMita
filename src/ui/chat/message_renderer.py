@@ -105,6 +105,11 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
         lay.setSpacing(0)
         lay.addStretch()
         lay.addWidget(panel)
+    elif role == "event":
+        lay.setContentsMargins(0, 4, 0, 6)
+        lay.addStretch()
+        lay.addWidget(panel)
+        lay.addStretch()
     else:
         lay.setContentsMargins(0, 2, 0, 4)
         lay.addWidget(panel)
@@ -613,7 +618,7 @@ def insert_message(
             rendered_urls.add(url)
     if tv_observation or len(entries) > 1:
         card = ImageSeriesWidget(entries, tv_observation=tv_observation, max_width=max_bw, parent=chat_parent)
-        gui.chat_window.add_message_widget(_wrap_panel_aligned(card, "assistant" if tv_observation else role,
+        gui.chat_window.add_message_widget(_wrap_panel_aligned(card, "event" if tv_observation else role,
                                                               parent=chat_parent), at_start=insert_at_start)
     else:
         for info in entries:

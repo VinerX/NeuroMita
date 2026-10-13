@@ -8,6 +8,7 @@ from ui.chat.message_widget import ImageWidget
 class ImageSeriesWidget(QFrame):
     def __init__(self, images, *, tv_observation=None, max_width=600, parent=None):
         super().__init__(parent)
+        tv = normalize_tv_observation(tv_observation)
         self.setObjectName("imageSeries")
         self.setMaximumWidth(max_width)
         self.setStyleSheet(
@@ -19,11 +20,12 @@ class ImageSeriesWidget(QFrame):
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
-        tv = normalize_tv_observation(tv_observation)
-        title = (_("Просмотр TV", "TV viewing") if tv else _("Серия изображений", "Image sequence"))
+        if tv:
+            self.setStyleSheet(self.styleSheet() + "QFrame#imageSeries { background: #181f2b; border-color: #405a70; } QFrame#imageSeries QLabel { color: #c8d7e4; } QFrame#imageSeries QPushButton { background: #253448; border-color: #405a70; color: #c8d7e4; }")
+        title = (_("Событие · Просмотр TV", "Event · TV viewing") if tv else _("Серия изображений", "Image sequence"))
         title += f" · {len(images)} " + _("кадров", "frames")
         header = QLabel(title)
-        header.setStyleSheet("font-weight: bold; color: #e0cbe9; border: none;")
+        header.setStyleSheet("font-weight: bold; color: " + ("#9fc5e3" if tv else "#e0cbe9") + "; border: none;")
         layout.addWidget(header)
         if tv:
             info = QLabel(f'{tv["title"]}\n{tv["author"] or _("Автор неизвестен", "Unknown author")} · '
@@ -53,7 +55,9 @@ class ImageSeriesWidget(QFrame):
                 label.setToolTip(_("Открыть кадр", "Open frame"))
                 label.mousePressEvent = lambda event, v=viewer: v._show_fullsize()
                 tile_layout.addWidget(label)
-                number = QLabel(str(index + 1))
+                times = tv.get("frame_times_seconds", []) if tv else []
+                stamp = times[index] if index < len(times) else None
+                number = QLabel(f"{int(stamp) // 60:02}:{int(stamp) % 60:02}" if stamp is not None else str(index + 1))
                 number.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 tile_layout.addWidget(number)
                 row.addWidget(tile)
