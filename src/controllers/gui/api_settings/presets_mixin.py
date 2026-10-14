@@ -363,6 +363,7 @@ class PresetsMixin:
             status = getattr(self, '_account_status', {})
             label = status.get('email') if status.get('signed_in') else ''
             v.account_button.setText(str(label or _("Аккаунты", "Accounts")))
+            v.account_button.setToolTip(str(label or ''))
         if hasattr(v, 'models_button'):
             v.models_button.setVisible(descriptor.account_actions)
             available = descriptor.account_actions and self._can_load_account_models(protocol_id)
