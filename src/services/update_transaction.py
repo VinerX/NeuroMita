@@ -177,6 +177,7 @@ class DirectoryInstallTransaction:
         target: Path,
         state_root: Path,
         logger: Callable[[str], None] | None = None,
+        lock_diagnostics: Callable[[Path], str] | None = None,
     ) -> None:
         self.component = str(component)
         target_input = Path(target).expanduser()
@@ -213,6 +214,30 @@ class DirectoryInstallTransaction:
             backup=self.target.parent / f".{self.target.name}.{safe_component}.backup",
         )
         self._logger = logger or (lambda _message: None)
+        self._lock_diagnostics = lock_diagnostics
+
+    def _replace_directory(self, source: Path, destination: Path) -> None:
+        delays = (0.2, 0.4, 0.8, 1.0, 1.0)
+        for attempt in range(len(delays) + 1):
+            self._assert_artifacts_safe()
+            try:
+                os.replace(source, destination)
+                return
+            except OSError as error:
+                if not isinstance(error, PermissionError) and getattr(error, "winerror", None) not in {5, 32, 33}:
+                    raise
+                if attempt == len(delays):
+                    detail = ""
+                    if self._lock_diagnostics is not None:
+                        try:
+                            detail = " " + self._lock_diagnostics(source)
+                        except Exception:
+                            detail = " Directory-user diagnostics unavailable."
+                    raise UpdateTransactionError(
+                        f"Cannot rename '{source}' -> '{destination}' after {attempt + 1} attempts: {error}.{detail}"
+                    ) from error
+                self._logger(f"Directory rename blocked; retry {attempt + 1}/{len(delays)}: {source}")
+                time.sleep(delays[attempt])
 
     @property
     def state(self) -> dict[str, Any]:
@@ -357,7 +382,7 @@ class DirectoryInstallTransaction:
                 phase = "target_backed_up"
         if phase == "target_backed_up":
             if not self.target.exists() and self.paths.stage.exists():
-                os.replace(self.paths.stage, self.target)
+                self._replace_directory(self.paths.stage, self.target)
             elif not self.target.exists():
                 self._rollback_without_target()
                 raise UpdateTransactionError("Interrupted commit lost its staging directory")
@@ -382,9 +407,9 @@ class DirectoryInstallTransaction:
             self._remove_owned_directory(self.paths.backup)
         try:
             if self.target.exists():
-                os.replace(self.target, self.paths.backup)
+                self._replace_directory(self.target, self.paths.backup)
             self.set_phase("target_backed_up")
-            os.replace(self.paths.stage, self.target)
+            self._replace_directory(self.paths.stage, self.target)
             self.set_phase("activated")
             verifier(self.target)
         except Exception:
@@ -407,7 +432,7 @@ class DirectoryInstallTransaction:
     def _rollback_without_target(self) -> None:
         self._assert_artifacts_safe()
         if self.paths.backup.exists() and not self.target.exists():
-            os.replace(self.paths.backup, self.target)
+            self._replace_directory(self.paths.backup, self.target)
 
     def finalize(self) -> None:
         self._assert_artifacts_safe()
@@ -420,7 +445,7 @@ class DirectoryInstallTransaction:
     def discard_artifacts(self, *, keep_journal: bool = False) -> None:
         self._assert_artifacts_safe()
         if self.paths.backup.exists() and not self.target.exists():
-            os.replace(self.paths.backup, self.target)
+            self._replace_directory(self.paths.backup, self.target)
         if self.paths.stage.exists():
             self._remove_owned_directory(self.paths.stage)
         if self.paths.backup.exists():
