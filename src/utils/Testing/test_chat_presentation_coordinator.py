@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from managers.history_ui_projector import HistoryUiProjector
+
 from ui.chat.presentation_coordinator import ChatPresentationCoordinator, ChatRenderCommand
 from ui.windows.app_window_base import AppWindowBase
 from controllers.gui.chat_controller import ChatController as GuiChatController
@@ -335,6 +339,78 @@ def test_composite_snapshot_covers_separate_live_fragments_with_same_message_id(
     assert plan.replay == ()
     assert coordinator.record_live(text) is False
     assert coordinator.record_live(image) is False
+
+
+@pytest.mark.parametrize("live_first", [True, False])
+def test_camera_image_is_not_replayed_from_a_player_history_message(live_first: bool) -> None:
+    coordinator = ChatPresentationCoordinator()
+    image_part = {
+        "type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AA=="},
+        "display_role": "assistant",
+    }
+    live = ChatRenderCommand(
+        role="assistant", content=[image_part], character_id="Kind", message_id="in:camera-request",
+    )
+    history = HistoryUiProjector().project_for_ui([{
+        "role": "user", "speaker": "Player", "sender": "Player", "target": "Kind",
+        "image_source": "mita_camera", "message_id": live.message_id,
+        "content": [{"type": "text", "text": "Can you see through your camera?"}, image_part],
+    }])
+    assert history[0]["role"] == "user"
+    assert history[0]["content"][0]["text"] == "Can you see through your camera?"
+    if live_first:
+        assert coordinator.record_live(live) is True
+    ticket = coordinator.begin_history_load("Kind")
+    plan = coordinator.plan_history_projection(
+        request_id=ticket.request_id, response_character_id="Kind", current_character_id="Kind",
+        history_messages=history,
+    )
+    assert plan.accepted is True
+    assert plan.replay == ()
+    assert coordinator.record_live(live) is False
+
+
+@pytest.mark.parametrize("live_role, live_url, message_id", [
+    ("user", "AA==", "in:camera-request"),
+    ("assistant", "BB==", "in:camera-request"),
+    ("assistant", "AA==", "in:another-request"),
+])
+def test_camera_snapshot_does_not_hide_a_different_image_or_message(
+    live_role: str, live_url: str, message_id: str,
+) -> None:
+    coordinator = ChatPresentationCoordinator()
+    live = ChatRenderCommand(
+        role=live_role, character_id="Kind", message_id=message_id,
+        content=[{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + live_url}}],
+    )
+    assert coordinator.record_live(live) is True
+    ticket = coordinator.begin_history_load("Kind")
+    plan = coordinator.plan_history_projection(
+        request_id=ticket.request_id, response_character_id="Kind", current_character_id="Kind",
+        history_messages=[{
+            "role": "user", "message_id": "in:camera-request",
+            "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AA=="},
+                         "display_role": "assistant"}],
+        }],
+    )
+    assert plan.replay == (live,)
+
+
+def test_image_display_role_does_not_change_text_identity() -> None:
+    coordinator = ChatPresentationCoordinator()
+    text = _command("in:mixed-roles", "same words", character_id="Kind")
+    assert coordinator.record_live(text) is True
+    ticket = coordinator.begin_history_load("Kind")
+    plan = coordinator.plan_history_projection(
+        request_id=ticket.request_id, response_character_id="Kind", current_character_id="Kind",
+        history_messages=[{
+            "role": "assistant", "message_id": text.message_id,
+            "content": [{"type": "text", "text": "same words"},
+                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AA=="},
+                         "display_role": "user"}],
+        }],
+    )
+    assert plan.replay == (text,)
 
 
 def test_partial_snapshot_replays_only_uncovered_fragment_for_same_message_id() -> None:

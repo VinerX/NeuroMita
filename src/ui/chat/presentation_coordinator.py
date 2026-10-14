@@ -119,40 +119,39 @@ class ChatPresentationCoordinator:
         return str(message_id or "").strip()
 
     @staticmethod
-    def _content_components(content: Any) -> tuple[tuple[str, str], ...]:
+    def _content_components(content: Any, role: str) -> tuple[tuple[str, str, str], ...]:
         if isinstance(content, str):
-            return (("text", content.strip()),)
+            return ((role, "text", content.strip()),)
         if isinstance(content, list):
-            visible: list[tuple[str, str]] = []
+            visible: list[tuple[str, str, str]] = []
             for item in content:
                 if not isinstance(item, dict):
-                    visible.append(("value", str(item)))
+                    visible.append((role, "value", str(item)))
                     continue
                 item_type = str(item.get("type") or "")
                 if item_type == "meta":
                     continue
                 if item_type == "text":
-                    visible.append(("text", str(item.get("text") or item.get("content") or "").strip()))
+                    visible.append((role, "text", str(item.get("text") or item.get("content") or "").strip()))
                 elif item_type == "image_url":
                     image_url = item.get("image_url")
                     url = image_url.get("url") if isinstance(image_url, dict) else ""
-                    visible.append(("image_url", str(url or "")))
+                    image_role = str(item.get("display_role") or role).strip().casefold()
+                    visible.append((image_role, "image_url", str(url or "")))
                 else:
-                    visible.append((item_type or "item", repr(sorted(item.items()))))
+                    visible.append((role, item_type or "item", repr(sorted(item.items()))))
             return tuple(visible)
-        return (("value", repr(content)),)
+        return ((role, "value", repr(content)),)
 
     @classmethod
     def _content_signature(cls, role: str, content: Any) -> tuple[Any, ...]:
         role_key = str(role or "").strip().casefold()
-        return (role_key, cls._content_components(content))
+        return (role_key, cls._content_components(content, role_key))
 
     @staticmethod
     def _signature_covers(snapshot_signature: tuple[Any, ...], live_signature: tuple[Any, ...]) -> bool:
         if not snapshot_signature or not live_signature:
             return snapshot_signature == live_signature
-        if snapshot_signature[0] != live_signature[0]:
-            return False
         snapshot_components = Counter(snapshot_signature[1])
         live_components = Counter(live_signature[1])
         return all(snapshot_components[component] >= count for component, count in live_components.items())
