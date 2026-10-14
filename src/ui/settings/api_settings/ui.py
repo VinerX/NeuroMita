@@ -213,9 +213,6 @@ def build_api_settings_ui(self, parent_layout):
     caption.addWidget(self.api_type_label)
     toolbar.addLayout(caption, 1)
     self.test_button = _button("Проверить", "Check", "fa5s.link", "ApiCheckButton")
-    self.account_button = _button("Аккаунты", "Accounts", "fa5s.user", "ApiAccountButton")
-    self.account_button.hide()
-    toolbar.addWidget(self.account_button)
     register(self.test_button, lambda button: button.setText(
         str(_("Проверка…", "Checking…") if button.property("apiTesting") else _(*(button.property("connectionActionLabel") or ("Проверить", "Check"))))
     ))
@@ -224,6 +221,7 @@ def build_api_settings_ui(self, parent_layout):
     self.cancel_button = _button("Отменить", "Cancel", "fa5s.undo")
     self.cancel_button.hide()
     for button in (self.test_button, self.cancel_button, self.save_preset_button):
+        button.setMinimumWidth(0)
         toolbar.addWidget(button)
     editor_layout.addWidget(editor_header)
 
@@ -268,6 +266,11 @@ def build_api_settings_ui(self, parent_layout):
     template_layout.addWidget(self.template_combo)
     identity.addWidget(template_field, 0, 1)
     content.addLayout(identity)
+
+    self.account_button = _button("Аккаунты", "Accounts", "fa5s.user", "ApiAccountButton")
+    self.account_button.setMinimumWidth(0)
+    self.account_button.hide()
+    content.addWidget(self.account_button, 0, Qt.AlignmentFlag.AlignLeft)
 
     self.api_url_row = ApiField(_("Ссылка API", "API URL"), editor=TemplateUrlEdit())
     content.addWidget(self.api_url_row)

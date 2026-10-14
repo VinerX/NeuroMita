@@ -6,13 +6,14 @@ import pytest
 from PyQt6.QtCore import QCoreApplication, QEvent
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
 
 from controllers.api_presets_controller import ApiTemplate
 from controllers.gui.api_settings.editor_mixin import EditorMixin
 from controllers.gui.voiceover_controller import VoiceoverGuiController
 from localization.live import language_changed_signal
 from presets.api_templates import API_TEMPLATES_DATA
+from styles.compose import get_main_window_stylesheet
 from ui.settings.api_settings.ui import build_api_settings_ui
 from ui.widgets.tr_combobox import TRQComboBox
 from ui.widgets.template_url_edit import TemplateUrlEdit
@@ -55,6 +56,47 @@ def test_custom_check_field_controls_check_button_live(editor):
     root.api_test_url_row.set_text("")
     editor._on_field_changed()
     assert root.test_button.isHidden()
+
+
+@pytest.mark.parametrize("width", [1000, 1530])
+@pytest.mark.parametrize("account, dirty", [(False, False), (True, False), (True, True)])
+def test_header_buttons_fit_their_text_in_one_row(editor, width, account, dirty):
+    root = editor.view
+    root.setStyleSheet(get_main_window_stylesheet())
+    root.provider_label.setText("Google AI Studio 1")
+    root.api_type_label.setText("ChatGPT Plan (Codex)" if account else "Google AI Studio")
+    root.preset_active_tag.show()
+    root.account_button.setVisible(account)
+    root.api_settings_container.show()
+    root.cancel_button.setVisible(dirty)
+    root.resize(width, 800)
+    root.show()
+    app = QApplication.instance()
+    app.processEvents()
+    header = root.findChild(QFrame, "ApiEditorHeader")
+
+    for email, action, save in [
+        ("Accounts", "Check", "Save"),
+        ("example.long.account@gmail.com", "Continue with ChatGPT", "Зберегти"),
+        ("Аккаунты", "Проверить", "Сохранить"),
+    ]:
+        root.account_button.setText(email)
+        root.test_button.setText(action)
+        root.save_preset_button.setText(save)
+        QTest.qWait(20)
+        buttons = [button for button in (
+            root.test_button, root.cancel_button, root.save_preset_button
+        ) if not button.isHidden()]
+        assert header.height() <= 70
+        assert len({button.y() for button in buttons}) == 1
+        for button in buttons:
+            assert button.width() >= button.sizeHint().width()
+            assert header.contentsRect().contains(button.geometry())
+        assert root.preset_active_tag.width() == root.preset_active_tag.sizeHint().width()
+        assert not header.isAncestorOf(root.account_button)
+        assert root.api_settings_container.isAncestorOf(root.account_button)
+        if account:
+            assert root.account_button.width() >= root.account_button.sizeHint().width()
 
 
 @pytest.mark.parametrize("template", API_TEMPLATES_DATA, ids=lambda item: item["name"])
