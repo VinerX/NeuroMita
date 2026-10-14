@@ -12,12 +12,18 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from PyQt6.QtWidgets import QApplication, QCheckBox, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from core.settings_registry import SettingsRegistry
 from ui.gui_templates import create_setting_widget
 from ui.settings.game_settings import _bind_manual_game_launch_buttons
 from ui.settings.settings_binding import QtSettingsViewModel
+from styles.main_styles import get_stylesheet
+from styles.theme import get_theme
+from services.settings_service import SettingsManagerService
 
 
 class _SettingsGui(QWidget):
@@ -86,6 +92,98 @@ class SettingsDependenciesTests(unittest.TestCase):
         finally:
             binding.close()
             settings.close()
+
+    def test_camera_row_labels_follow_enabled_state_in_both_directions(self) -> None:
+        settings = SettingsRegistry({"MITA_CAMERA_ENABLED": False, "MITA_CAMERA_CONTINUOUS": True})
+        binding = QtSettingsViewModel(settings)
+        gui = _SettingsGui(binding)
+        gui.setObjectName("SettingsPageRoot")
+        gui.setStyleSheet(
+            'QWidget#SettingsPageRoot QLabel { color: white; }'
+            'QWidget#SettingsPageRoot QWidget#SettingRow[disabled="true"] QLabel '
+            '{ color: rgba(188,169,187,0.34); }'
+        )
+        layout = QVBoxLayout(gui)
+        try:
+            layout.addWidget(create_setting_widget(
+                gui, gui, "Camera", setting_key="MITA_CAMERA_ENABLED",
+                widget_type="checkbutton", widget_name="MITA_CAMERA_ENABLED",
+            ))
+            row = create_setting_widget(
+                gui, gui, "Continuous capture", setting_key="MITA_CAMERA_CONTINUOUS",
+                widget_type="checkbutton", widget_name="MITA_CAMERA_CONTINUOUS",
+                depends_on="MITA_CAMERA_ENABLED", description="Frames accompany the next turn.",
+            )
+            layout.addWidget(row)
+            gui.show()
+            self.app.processEvents()
+            labels = row.findChildren(QLabel)
+            self.assertEqual(len(labels), 2)
+            for enabled in (True, False, True):
+                settings.set("MITA_CAMERA_ENABLED", enabled)
+                self.app.processEvents()
+                self.app.processEvents()
+                self.assertEqual(gui.MITA_CAMERA_CONTINUOUS.isEnabled(), enabled)
+                self.assertEqual(row.property("disabled"), "false" if enabled else "true")
+                expected = (255, 255, 255, 255) if enabled else (188, 169, 187, 86)
+                for label in labels:
+                    self.assertEqual(label.palette().color(QPalette.ColorRole.WindowText).getRgb(), expected)
+        finally:
+            gui.close()
+            binding.close()
+            settings.close()
+
+    def test_request_interval_uses_active_style_with_the_production_theme(self) -> None:
+        for initial_enabled in (False, True):
+            with self.subTest(initial_enabled=initial_enabled):
+                settings = SettingsRegistry({
+                    "SEND_IMAGE_REQUESTS": initial_enabled, "IMAGE_REQUEST_INTERVAL": "20.0",
+                })
+                binding = QtSettingsViewModel(SettingsManagerService(settings))
+                gui = _SettingsGui(binding)
+                gui.setObjectName("SettingsPageRoot")
+                gui.setStyleSheet(get_stylesheet())
+                layout = QVBoxLayout(gui)
+                try:
+                    layout.addWidget(create_setting_widget(
+                        gui, gui, "Send Image Requests", setting_key="SEND_IMAGE_REQUESTS",
+                        widget_type="checkbutton", widget_name="SEND_IMAGE_REQUESTS",
+                    ))
+                    row = create_setting_widget(
+                        gui, gui, "Request Interval (sec)", setting_key="IMAGE_REQUEST_INTERVAL",
+                        widget_type="entry", widget_name="IMAGE_REQUEST_INTERVAL",
+                        depends_on="SEND_IMAGE_REQUESTS", default="20.0",
+                    )
+                    layout.addWidget(row)
+                    gui.show()
+                    self.app.processEvents()
+                    label = row.findChild(QLabel)
+
+                    def assert_state(enabled: bool) -> None:
+                        self.assertEqual(gui.SEND_IMAGE_REQUESTS.isChecked(), enabled)
+                        self.assertEqual(gui.IMAGE_REQUEST_INTERVAL.isEnabled(), enabled)
+                        self.assertEqual(label.isEnabled(), enabled)
+                        self.assertEqual(row.property("disabled"), "false" if enabled else "true")
+                        expected = QColor(get_theme()["text"]).getRgb() if enabled else (188, 169, 187, 86)
+                        self.assertEqual(label.palette().color(QPalette.ColorRole.WindowText).getRgb(), expected)
+                        self.assertEqual(gui.IMAGE_REQUEST_INTERVAL.text(), "20.0")
+
+                    assert_state(initial_enabled)
+                    for _ in range(2):
+                        QTest.mouseClick(gui.SEND_IMAGE_REQUESTS, Qt.MouseButton.LeftButton)
+                        assert_state(gui.SEND_IMAGE_REQUESTS.isChecked())
+                    for enabled in (not initial_enabled, initial_enabled):
+                        settings.set("SEND_IMAGE_REQUESTS", enabled)
+                        for _ in range(50):
+                            self.app.processEvents()
+                            if gui.SEND_IMAGE_REQUESTS.isChecked() == enabled:
+                                break
+                            QTest.qWait(10)
+                        assert_state(enabled)
+                finally:
+                    gui.close()
+                    binding.close()
+                    settings.close()
 
     def test_manual_game_buttons_follow_global_and_per_game_switches(self) -> None:
         gui = QWidget()

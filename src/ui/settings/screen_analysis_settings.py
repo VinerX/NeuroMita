@@ -386,9 +386,9 @@ def _setup_mita_camera_section(gui, parent_layout) -> None:
             'default_checkbutton': False,
             'tooltip': _(
                 'Активирует систему камеры на голове Миты.\n'
-                'Необходимо назначить Camera-компонент в Unity-сцене.',
+                'Камера создаётся автоматически у активной Миты в Unity.',
                 'Activates the head-mounted camera system on Mita.\n'
-                'Requires a Camera component assigned in the Unity scene.'
+                'Unity creates the camera automatically on the active Mita.'
             ),
         },
         {
