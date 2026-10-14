@@ -2925,5 +2925,13 @@
   "Яванский": "javanais",
   "Язык распознавания": "Langue de reconnaissance",
   "Язык сохраняется отдельно для каждой модели.": "La langue est enregistrée séparément pour chaque modèle.",
-  "Японский": "japonais"
+  "Японский": "japonais",
+  "Мат! Победили Черные.": "Échec et mat ! Les noirs gagnent.",
+  "Мат! Победили Белые.": "Échec et mat ! Les blancs gagnent.",
+  "Ничья (пат).": "Nulle (pat).",
+  "Ничья (недостаточно материала).": "Nulle (matériel insuffisant).",
+  "Ничья (правило 75 ходов).": "Nulle (règle des 75 coups).",
+  "Ничья (пятикратное повторение позиции).": "Nulle (quintuple répétition de la position).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Nulle (peut être réclamée selon la règle des 50 coups ou par triple répétition).",
+  "Игра продолжается.": "La partie continue."
 }

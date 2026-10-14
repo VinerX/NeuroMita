@@ -2847,5 +2847,13 @@
   "Яванский": "javaneză",
   "Язык распознавания": "Limba de recunoaștere",
   "Язык сохраняется отдельно для каждой модели.": "Limba este salvată separat pentru fiecare model.",
-  "Японский": "japoneză"
+  "Японский": "japoneză",
+  "Мат! Победили Черные.": "Șah mat! Negrul câștigă.",
+  "Мат! Победили Белые.": "Șah mat! Albul câștigă.",
+  "Ничья (пат).": "Remiză (pat).",
+  "Ничья (недостаточно материала).": "Remiză (material insuficient).",
+  "Ничья (правило 75 ходов).": "Remiză (regula celor 75 de mutări).",
+  "Ничья (пятикратное повторение позиции).": "Remiză (repetarea de cinci ori a poziției).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Remiză (poate fi solicitată conform regulii celor 50 de mutări sau triplei repetări a poziției).",
+  "Игра продолжается.": "Partida continuă."
 }

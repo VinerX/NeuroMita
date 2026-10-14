@@ -2847,5 +2847,13 @@
   "Яванский": "javanés",
   "Язык распознавания": "Idioma de reconocimiento",
   "Язык сохраняется отдельно для каждой модели.": "El idioma se guarda por separado para cada modelo.",
-  "Японский": "japonés"
+  "Японский": "japonés",
+  "Мат! Победили Черные.": "¡Jaque mate! Ganan las negras.",
+  "Мат! Победили Белые.": "¡Jaque mate! Ganan las blancas.",
+  "Ничья (пат).": "Tablas (ahogado).",
+  "Ничья (недостаточно материала).": "Tablas (material insuficiente).",
+  "Ничья (правило 75 ходов).": "Tablas (regla de las 75 jugadas).",
+  "Ничья (пятикратное повторение позиции).": "Tablas (quíntuple repetición de la posición).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Tablas (se pueden reclamar por la regla de las 50 jugadas o triple repetición).",
+  "Игра продолжается.": "La partida continúa."
 }

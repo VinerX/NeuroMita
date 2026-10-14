@@ -602,6 +602,14 @@ class ChessGuiTkinter(QMainWindow):
         msg_box.setWindowTitle(_("Игра окончена", "Game over"))
         msg_box.setText(message)
         player_lost = self._did_player_lose()
+        board = self.game_controller.get_current_board_object_for_gui()
+        outcome = board.outcome(claim_draw=True)
+        result = None
+        if outcome is not None:
+            player_color = self.game_controller.get_player_color_is_white_for_gui()
+            result = "draw" if outcome.winner is None else (
+                "player_win" if outcome.winner == player_color else "mita_win"
+            )
         if player_lost:
             new_game_button = msg_box.addButton(
                 _("Новая игра", "New game"), QMessageBox.ButtonRole.AcceptRole
@@ -632,17 +640,17 @@ class ChessGuiTkinter(QMainWindow):
             }}
             QPushButton:hover {{ background-color: {ChessGameModelTkStyles.COLOR_BUTTON_HOVER_BG}; }}
         """)
+        if not player_lost:
+            self._request_game_over_reaction(message, result=result)
         msg_box.exec()
         if player_lost:
             if msg_box.clickedButton() is new_game_button:
                 self.game_controller.new_game()
-                self._request_game_over_reaction(message, "restart")
+                self._request_game_over_reaction(message, "restart", result=result)
             else:
-                self._request_game_over_reaction(message, "close")
+                self._request_game_over_reaction(message, "close", result=result)
                 self.is_closing = True
                 self.close()
-        else:
-            self._request_game_over_reaction(message)
 
     def _did_player_lose(self):
         if not self.game_controller:
@@ -767,11 +775,13 @@ class ChessGuiTkinter(QMainWindow):
         except Exception as exc:
             print(f"GUI Error: Could not queue manual Mita chess turn request: {format_exception(exc)}")
 
-    def _request_game_over_reaction(self, outcome, choice=None):
+    def _request_game_over_reaction(self, outcome, choice=None, *, result=None):
         if not self.mita_reaction_checkbox or not self.mita_reaction_checkbox.isChecked() or not self.reaction_queue:
             return
         try:
             event = {"event": "player_game_over", "outcome": str(outcome or "")}
+            if result:
+                event["result"] = result
             if choice:
                 event["choice"] = choice
             self.reaction_queue.put(event)

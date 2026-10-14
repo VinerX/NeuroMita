@@ -2852,5 +2852,13 @@
   "Яванский": "giavanese",
   "Язык распознавания": "Lingua di riconoscimento",
   "Язык сохраняется отдельно для каждой модели.": "La lingua viene salvata separatamente per ogni modello.",
-  "Японский": "giapponese"
+  "Японский": "giapponese",
+  "Мат! Победили Черные.": "Scacco matto! Vince il Nero.",
+  "Мат! Победили Белые.": "Scacco matto! Vince il Bianco.",
+  "Ничья (пат).": "Patta (stallo).",
+  "Ничья (недостаточно материала).": "Patta (materiale insufficiente).",
+  "Ничья (правило 75 ходов).": "Patta (regola delle 75 mosse).",
+  "Ничья (пятикратное повторение позиции).": "Patta (ripetizione quintupla della posizione).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Patta (reclamabile per la regola delle 50 mosse o triplice ripetizione).",
+  "Игра продолжается.": "La partita continua."
 }

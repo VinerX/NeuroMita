@@ -2853,5 +2853,13 @@
   "Яванский": "javanês",
   "Язык распознавания": "Idioma de reconhecimento",
   "Язык сохраняется отдельно для каждой модели.": "O idioma é salvo separadamente para cada modelo.",
-  "Японский": "japonês"
+  "Японский": "japonês",
+  "Мат! Победили Черные.": "Xeque-mate! As pretas vencem.",
+  "Мат! Победили Белые.": "Xeque-mate! As brancas vencem.",
+  "Ничья (пат).": "Empate (afogamento).",
+  "Ничья (недостаточно материала).": "Empate (material insuficiente).",
+  "Ничья (правило 75 ходов).": "Empate (regra dos 75 lances).",
+  "Ничья (пятикратное повторение позиции).": "Empate (repetição quíntupla da posição).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Empate (pode ser reivindicado pela regra dos 50 lances ou tripla repetição).",
+  "Игра продолжается.": "A partida continua."
 }

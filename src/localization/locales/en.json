@@ -2542,5 +2542,13 @@
   "Яванский": "Javanese",
   "Язык распознавания": "Recognition language",
   "Язык сохраняется отдельно для каждой модели.": "The language is saved separately for each model.",
-  "Японский": "Japanese"
+  "Японский": "Japanese",
+  "Мат! Победили Черные.": "Checkmate! Black wins.",
+  "Мат! Победили Белые.": "Checkmate! White wins.",
+  "Ничья (пат).": "Draw (stalemate).",
+  "Ничья (недостаточно материала).": "Draw (insufficient material).",
+  "Ничья (правило 75 ходов).": "Draw (75-move rule).",
+  "Ничья (пятикратное повторение позиции).": "Draw (fivefold repetition).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Draw (claim available under the 50-move rule or threefold repetition).",
+  "Игра продолжается.": "Game in progress."
 }

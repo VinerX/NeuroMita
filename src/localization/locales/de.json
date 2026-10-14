@@ -2919,5 +2919,13 @@
   "Яванский": "Javanisch",
   "Язык распознавания": "Erkennungssprache",
   "Язык сохраняется отдельно для каждой модели.": "Die Sprache wird für jedes Modell separat gespeichert.",
-  "Японский": "Japanisch"
+  "Японский": "Japanisch",
+  "Мат! Победили Черные.": "Schachmatt! Schwarz gewinnt.",
+  "Мат! Победили Белые.": "Schachmatt! Weiß gewinnt.",
+  "Ничья (пат).": "Remis (Patt).",
+  "Ничья (недостаточно материала).": "Remis (unzureichendes Material).",
+  "Ничья (правило 75 ходов).": "Remis (75-Züge-Regel).",
+  "Ничья (пятикратное повторение позиции).": "Remis (fünffache Stellungswiederholung).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Remis (kann nach der 50-Züge-Regel oder dreifacher Stellungswiederholung beansprucht werden).",
+  "Игра продолжается.": "Die Partie läuft."
 }

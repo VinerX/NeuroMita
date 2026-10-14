@@ -2847,5 +2847,13 @@
   "Яванский": "jawajski",
   "Язык распознавания": "Język rozpoznawania",
   "Язык сохраняется отдельно для каждой модели.": "Język jest zapisywany osobno dla każdego modelu.",
-  "Японский": "japoński"
+  "Японский": "japoński",
+  "Мат! Победили Черные.": "Mat! Czarne wygrywają.",
+  "Мат! Победили Белые.": "Mat! Białe wygrywają.",
+  "Ничья (пат).": "Remis (pat).",
+  "Ничья (недостаточно материала).": "Remis (niewystarczający materiał).",
+  "Ничья (правило 75 ходов).": "Remis (reguła 75 posunięć).",
+  "Ничья (пятикратное повторение позиции).": "Remis (pięciokrotne powtórzenie pozycji).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Remis (można go zażądać na podstawie reguły 50 posunięć lub trzykrotnego powtórzenia pozycji).",
+  "Игра продолжается.": "Gra trwa."
 }

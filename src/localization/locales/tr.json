@@ -2847,5 +2847,13 @@
   "Яванский": "Cava dili",
   "Язык распознавания": "Tanıma dili",
   "Язык сохраняется отдельно для каждой модели.": "Dil her model için ayrı kaydedilir.",
-  "Японский": "Japonca"
+  "Японский": "Japonca",
+  "Мат! Победили Черные.": "Şah mat! Siyah kazandı.",
+  "Мат! Победили Белые.": "Şah mat! Beyaz kazandı.",
+  "Ничья (пат).": "Berabere (pat).",
+  "Ничья (недостаточно материала).": "Berabere (yetersiz materyal).",
+  "Ничья (правило 75 ходов).": "Berabere (75 hamle kuralı).",
+  "Ничья (пятикратное повторение позиции).": "Berabere (beş kez konum tekrarı).",
+  "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).": "Berabere (50 hamle kuralı veya üç kez konum tekrarı nedeniyle talep edilebilir).",
+  "Игра продолжается.": "Oyun devam ediyor."
 }
