@@ -45,6 +45,8 @@ If network problems prevent the Unity download from completing, a [manual instal
 
 Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over an existing working NeuroMita folder.
 
+Detailed changelogs: [version history](docs/versions/README.md).
+
 ### Setting up the first chat
 
 1. Open **Settings → API presets**.
