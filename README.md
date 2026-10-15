@@ -1,4 +1,4 @@
-# NeuroMita 0.1 Alpha
+# NeuroMita 0.1.1 Alpha
 
 <p align="center">
   🌐 <b>Русский</b> · <a href="README_EN.md">English</a>
