@@ -1579,10 +1579,21 @@ jobs:
             exit 1
 
           else
-            git merge \
-              --no-ff \
-              "$SOURCE_COMMIT" \
-              -m "Promote tested Atm4x release $SOURCE_TAG"
+              git merge \
+                --no-ff \
+                --no-commit \
+                "$SOURCE_COMMIT"
+              
+              # Workflows относятся к release-репозиторию VinerX
+              # и не должны переноситься из тестового контура Atm4x.
+              git restore \
+                --source="$BASE_COMMIT" \
+                --staged \
+                --worktree \
+                -- .github/workflows
+              
+              git commit \
+                -m "Promote tested Atm4x release $SOURCE_TAG"
 
             RELEASE_COMMIT="$(
               git rev-parse HEAD
