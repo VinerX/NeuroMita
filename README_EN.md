@@ -178,7 +178,7 @@ We also welcome **3D modelers and animators**. Their work comes up as focused ta
 <summary><b>Testers</b></summary>
 ⠀
 
-- **Nazarlo** (`nazarlo`)
+- **Nazarlo** (`nazarlo`) — Special thanks.
 - **SuperAngel** (`superangel25`)
 - **#1 crazy Mita hater** (`valtiata`)
 - **Unaligneds** (`fiery_crotch_669`)

@@ -178,7 +178,7 @@ NeuroMita развивается силами сообщества. Сейчас
 <summary><b>Тестировщики</b></summary>
 ⠀
 
-- **Nazarlo** (`nazarlo`)
+- **Nazarlo** (`nazarlo`) — Особая благодарность.
 - **SuperAngel** (`superangel25`)
 - **#1 crazy Mita hater** (`valtiata`)
 - **Unaligneds** (`fiery_crotch_669`)
