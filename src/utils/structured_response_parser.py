@@ -69,6 +69,7 @@ def parse_structured_response_with_meta(
     raw_text: str,
     *,
     model_cls: Type[StructuredResponse] = StructuredResponse,
+    profile=None,
 ) -> StructuredParseOutcome:
     if not raw_text or not isinstance(raw_text, str):
         raise StructuredResponseParseError(
@@ -127,6 +128,16 @@ def parse_structured_response_with_meta(
             code="structured_json_root_type",
             stage="parse",
         )
+
+    model_cls = model_cls or StructuredResponse
+    if ("changes" in data or "events" in data) and issubclass(model_cls, StructuredResponse):
+        from schemas.sparse_structured_response import normalize_sparse_response
+        try:
+            data = normalize_sparse_response(data, model_cls, profile)
+        except (ValueError, TypeError) as exc:
+            raise StructuredResponseParseError(
+                "Invalid sparse response changes", code="structured_sparse_invalid", stage="schema",
+            ) from exc
 
     # Compatibility fallback for older or unconstrained model output. Keep this
     # out of StructuredResponse so providers never advertise top-level commands.

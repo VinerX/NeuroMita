@@ -1,4 +1,5 @@
-from ui.gui_templates import create_settings_section, create_section_header
+from ui.widgets.settings_section_header import create_settings_header
+from ui.gui_templates import create_settings_section
 from utils import getTranslationVariant as _
 
 
@@ -13,7 +14,7 @@ def setup_model_interaction_controls(
     from ui.settings.runtime_options import attach_runtime_options_view_model
 
     attach_runtime_options_view_model(self, runtime_options_view_model)
-    create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
+    create_settings_header(parent, "models")
 
     general_config = [
         {
@@ -196,4 +197,3 @@ def setup_model_interaction_controls(
 
     # Token pricing/context limits now come from the selected provider/preset,
     # so the old manual "Token Settings" subsection is intentionally removed.
-

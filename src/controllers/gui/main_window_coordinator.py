@@ -24,7 +24,7 @@ class MainWindowCoordinator:
             raise RuntimeError("Main window coordinator is already closed")
         view = self._view
         view.page_map = {}
-        view._deferred_main_pages = {"sandbox", "news", "wiki", "logs"}
+        view._deferred_main_pages = {"sandbox", "news", "gallery", "wiki", "logs"}
         view._page_building = set()
         view._page_placeholders = {}
         view._pending_page_actions = {}
@@ -151,6 +151,10 @@ class MainWindowCoordinator:
         if page_key == "news":
             page = factory(view, view_models.news_page(view), view._page_actions)
             view.news_page = page
+            return page
+        if page_key == "gallery":
+            page = factory(view, view_models.gallery_page(view))
+            view.gallery_page = page
             return page
         if page_key == "sandbox":
             from ui.widgets.chat_panel_presentation import ChatPanelActions

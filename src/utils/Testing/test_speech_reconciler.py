@@ -22,6 +22,10 @@ if str(PROJECT_SRC) not in sys.path:
 
 import controllers.speech_controller as speech_module
 from controllers.speech_controller import SpeechController
+from domain.audio_input import AudioInputCatalog
+from services.microphone_selection import MicrophoneSelectionService
+from infrastructure.settings.microphone_preferences import SettingsMicrophonePreferences
+from types import SimpleNamespace
 from core.events import Event
 
 
@@ -72,6 +76,7 @@ class _FakeRecognition:
             self.events.append("stop")
 
     def speech_recognition_switch_microphone(self, device_id):
+        device_id = getattr(device_id, "index", device_id) or 0
         with self._lock:
             self.events.append(f"switch:{device_id}")
         return self.switch_result
@@ -100,6 +105,10 @@ class _SpeechReconcilerCase(unittest.TestCase):
         settings = _FakeSettings({"MIC_ACTIVE": mic_active})
         controller = SpeechController.__new__(SpeechController)
         controller.settings = settings
+        controller._microphone_service_instance = MicrophoneSelectionService(
+            SettingsMicrophonePreferences(settings),
+            SimpleNamespace(read=lambda **kwargs: AudioInputCatalog()),
+        )
         controller.asr_settings = _FakeAsrSettings()
         controller.device_id = 0
         controller.mic_recognition_active = False

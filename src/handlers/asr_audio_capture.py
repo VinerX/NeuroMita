@@ -7,11 +7,16 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from dataclasses import dataclass
+from domain.audio_input import MicrophoneSelection
 from typing import Awaitable, Callable
 
 import numpy as np
 
-from handlers.asr_audio_devices import refresh_portaudio_catalog
+from handlers.asr_audio_devices import (
+    refresh_portaudio_catalog,
+    portaudio_stream_scope,
+    resolve_asr_input_device,
+)
 from handlers.asr_input_gate import ASRInputGate
 from handlers.asr_capture_progress import CaptureProgressTracker
 
@@ -349,16 +354,19 @@ class AudioCaptureService:
     async def run(
         self,
         *,
-        microphone_index: int,
+        microphone_index: int | None = None,
         config: AudioCaptureConfig,
         is_active: Callable[[], bool],
         speech_probability: Callable[[np.ndarray, int], float],
         on_segment: Callable[[np.ndarray, int], Awaitable[None]],
         on_ready: Callable[[], None] | None = None,
         input_gate: ASRInputGate | None = None,
-        on_segment_context: Callable[[np.ndarray, int, dict], Awaitable[None]] | None = None,
+        on_segment_context: (
+            Callable[[np.ndarray, int, dict], Awaitable[None]] | None
+        ) = None,
         background_transcription: bool = False,
         on_activity: Callable[[dict], None] | None = None,
+        selection: MicrophoneSelection | None = None,
     ) -> None:
         try:
             import sounddevice as sd
@@ -367,7 +375,22 @@ class AudioCaptureService:
 
         # ASR worker может жить дольше подключённого микрофона. Обновляем его
         # собственный PortAudio-каталог перед открытием выбранного GUI индекса.
-        refresh_portaudio_catalog(sd)
+        selection = selection or MicrophoneSelection(index=microphone_index)
+        microphone_index = selection.index or 0
+        if selection.uid or selection.backend:
+            selected = resolve_asr_input_device(
+                sd,
+                requested_index=microphone_index,
+                requested_name=selection.name or None,
+                requested_uid=selection.uid,
+                requested_backend=selection.backend,
+                refresh=True,
+            )
+            if selected is None:
+                raise AudioCaptureError("Selected microphone endpoint is unavailable")
+            microphone_index = selected.index
+        else:
+            refresh_portaudio_catalog(sd)
         device_name, host_api_name, default_sample_rate = _device_description(
             sd,
             microphone_index,
@@ -425,7 +448,7 @@ class AudioCaptureService:
                 progress.finish(context, error)
 
         try:
-            with sd.InputStream(
+            with portaudio_stream_scope(), sd.InputStream(
                 samplerate=capture_sample_rate,
                 channels=1,
                 dtype="float32",

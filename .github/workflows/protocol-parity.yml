@@ -1,0 +1,43 @@
+name: Protocol parity
+
+on:
+  push:
+    branches:
+      - codex/responses-chat-completions-parity
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/verify_protocol_parity.py'
+      - '.github/workflows/protocol-parity.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/verify_protocol_parity.py'
+      - '.github/workflows/protocol-parity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: tests/requirements-protocol-parity.txt
+      - name: Install protocol test dependencies
+        run: python -m pip install -r tests/requirements-protocol-parity.txt
+      - name: Verify protocols, fallback, tools and restored history
+        run: python scripts/verify_protocol_parity.py --junitxml=protocol-parity-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: protocol-parity-results
+          path: protocol-parity-results.xml
+          if-no-files-found: ignore

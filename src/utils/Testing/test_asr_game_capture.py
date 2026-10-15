@@ -217,3 +217,48 @@ def test_wire_ack_and_always_on_delay_reach_original_game_session():
     ack, text = writer.payloads()
     assert ack["command_generation"] == 7 and not ack["accepted"]
     assert text["autosend"] and text["delay_sec"] == 3
+
+def test_always_on_routes_each_ready_phrase_without_manual_capture_identity(monkeypatch):
+    from core.events import Event
+    from handlers.asr_handler import SpeechRecognition
+    from handlers.asr_input_gate import ASRInputGate
+    from utils.Testing.test_asr_session_routing import _Speech
+    gate = ASRInputGate(clock=lambda: 10)
+    gate.configure(input_mode="vad")
+    monkeypatch.setattr(SpeechRecognition, "_input_gate", gate)
+    speech = _Speech(turn_owner="game#1")
+    c = {**gate.snapshot(), "capture_tracking": True}
+    speech.ctrl._on_speech_text_recognized(Event("text", dict(text="ready phrase", capture_context=c)))
+    payload = speech.sent_to_game()[0]
+    assert payload["final"] and payload["text"] == "ready phrase"
+    assert "capture_id" not in payload
+
+
+def test_epoch_change_reports_cancelled_capture_instead_of_silently_dropping_it():
+    events = []
+    tracker = CaptureProgressTracker(events.append)
+    c = context()
+    tracker.observe(c, c, voiced=True)
+    tracker.enqueue(c)
+    tracker.observe(context(epoch=1, active=False), None, voiced=False)
+    cancelled = [event for event in events if event["phase"] == "cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["capture_context"]["epoch"] == 0
+    assert cancelled[0]["pending"] == 0
+
+
+def test_cancelled_capture_reaches_original_game_even_after_epoch_is_invalid(monkeypatch):
+    from core.events import Event, Events
+    from handlers.asr_handler import SpeechRecognition
+    from handlers.asr_input_gate import ASRInputGate
+    from utils.Testing.test_asr_session_routing import _Speech
+    gate = ASRInputGate(clock=lambda: 10)
+    gate.radio(active=True, session_id="game#1", target="game", generation=1)
+    monkeypatch.setattr(SpeechRecognition, "_input_gate", gate)
+    c = gate.snapshot()
+    gate.reset()
+    speech = _Speech(turn_owner="other-game")
+    speech.ctrl._on_capture_progress(Event("progress", dict(
+        phase="cancelled", capture_context=c, capture_id="0:1", pending=0, error="capture_cancelled")))
+    status = [data for name, data in speech.bus.sent if name == Events.Server.SEND_ASR_CAPTURE_STATE]
+    assert status[0]["client_id"] == "game#1" and status[0]["phase"] == "cancelled"

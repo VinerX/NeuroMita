@@ -2,6 +2,7 @@ from __future__ import annotations
 from core.error_utils import format_exception
 
 from typing import Any
+from copy import deepcopy
 
 from PyQt6.QtCore import QTimer
 
@@ -10,7 +11,11 @@ from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
 from utils import _
+from presets.api_endpoints import server_address
 from ui.provider_icons import template_provider, provider_icon
+
+
+from services.provider_settings import describe_protocol
 
 
 class PresetsMixin:
@@ -77,8 +82,8 @@ class PresetsMixin:
             v.template_combo.clear()
             v.template_combo.add_tr_item("Без шаблона", "No template", value=None)
             v.template_combo.setItemIcon(0, provider_icon(""))
-            priority = {"Google AI Studio": 0, "OpenRouter": 1, "Mistral AI": 2}
-            ordered_templates = sorted(builtin, key=lambda p: priority.get(str(getattr(p, "name", "")), 3))
+            priority = {"Google AI Studio": 1, "OpenRouter": 2, "Mistral AI": 3, "ChatGPT Plan (Codex)": 5}
+            ordered_templates = sorted(builtin, key=lambda p: priority.get(str(getattr(p, "name", "")), 4))
             for p in ordered_templates:
                 v.template_combo.add_provider_item(
                     getattr(p, "name", ""), value=getattr(p, "id", None),
@@ -199,11 +204,16 @@ class PresetsMixin:
         self.load_preset_async(int(cur_item.preset_id))
 
     def load_preset_async(self, preset_id: int) -> None:
+        self._preset_load_serial = getattr(self, '_preset_load_serial', 0) + 1
+        serial = self._preset_load_serial
+        self._set_model_suggestions([])
         def _call():
             service = use(ApiPresetService)
             return service.get_full(int(preset_id)), service.load_state(int(preset_id))
 
         def _apply(payload):
+            if serial != self._preset_load_serial:
+                return
             preset, state = payload
             if not preset:
                 return
@@ -213,6 +223,8 @@ class PresetsMixin:
 
             self.current_preset_id = int(preset_id)
             self.current_preset_data = dict(preset)
+            overrides = preset.get("protocol_overrides")
+            self._protocol_overrides = deepcopy(overrides) if isinstance(overrides, dict) else {}
 
             model = str(state.get("model") or preset.get("default_model") or "")
             key = str(state.get("key") or preset.get("key") or "")
@@ -224,6 +236,7 @@ class PresetsMixin:
 
             base = self._parse_base(preset.get("base", None))
             self._active_template = dict(preset) if base is not None else None
+            v.api_url_row.edit.set_template(self._active_template or {})
             self._set_protocol_config_visible(base is None)
 
             v.template_combo.blockSignals(True)
@@ -250,19 +263,27 @@ class PresetsMixin:
                     url = url_tpl.format(model=model) if "{model}" in url_tpl else url_tpl
                 except Exception:
                     url = url_tpl
-            elif base is not None:
+            elif base is not None and not preset.get("url_editable"):
                 url = str(preset.get("url") or "")
             else:
                 url = str(state.get("url") or preset.get("url") or "")
 
-            v.api_url_row.set_text(url)
+            v.api_url_row.set_text(
+                server_address(preset, url) if preset.get("url_editable") else url
+            )
+            v.api_test_url_row.set_text(
+                str(state.get("test_url", preset.get("test_url", "")) or "")
+            )
             v.api_model_row.set_text(model)
             v.api_key_row.set_text(key)
             v.reserve_keys_row.set_text("\n".join([str(k).strip() for k in reserve_keys if str(k).strip()]))
             v.reserve_keys_row.set_distribute(reserve_keys_distribute)
 
             dialect = str((self._protocols.get(eff_pid) or {}).get("dialect") or "openai_chat_completions")
-            self.model_settings_controller.load(preset, dialect, v.settings)
+            self.model_settings_controller.load(
+                preset, dialect, v.settings,
+                provider=str((self._protocols.get(eff_pid) or {}).get("provider") or ""),
+            )
 
             openrouter_routing = preset.get("openrouter_routing") or {}
             if isinstance(openrouter_routing, dict):
@@ -278,17 +299,16 @@ class PresetsMixin:
                 v.fallback_editor.blockSignals(False)
 
             v.protocol_row.set_enabled(base is None)
-            v.api_url_row.set_enabled(base is None)
+            v.api_url_row.set_enabled(base is None or bool(preset.get("url_editable")))
 
             self._apply_help_links(preset)
             self._refresh_model_settings_dialect()
 
-            known_models = preset.get("known_models", []) or []
-            if isinstance(known_models, list) and known_models:
-                v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
+            self._set_model_suggestions(preset.get('known_models'))
 
             v.provider_label.setText(str(preset.get("name", "")))
             v.preset_name_row.set_text(preset.get("name", ""))
+            self._apply_provider_ui(eff_pid)
             v.api_settings_container.setVisible(True)
             v.preset_active_tag.setVisible(int(v.settings.get("LAST_API_PRESET_ID", 0) or 0) == int(preset_id))
 
@@ -312,3 +332,41 @@ class PresetsMixin:
                     self._selection_retry_count = 0
 
         self._bus_call_async(_call, _apply, name="load_preset")
+
+    def _apply_provider_ui(self, protocol_id: str) -> None:
+        v = self.view
+        descriptor = describe_protocol(protocol_id)
+        fields = descriptor.settings
+        if descriptor.account_actions:
+            self._ensure_account_status(protocol_id)
+        elif getattr(self, '_account_status_protocol', None):
+            self._set_account_status('', {})
+        if hasattr(v, 'subscription_info'):
+            v.subscription_info.configure(descriptor)
+        v.test_button.setProperty('connectionActionLabel', descriptor.action_label)
+        if not v.test_button.property('apiTesting'):
+            v.test_button.setText(_(*descriptor.action_label))
+        v.api_url_row.setVisible(fields.api_url)
+        v.api_key_row.setVisible(fields.api_key)
+        v.reserve_keys_section.setVisible(fields.reserve_keys)
+        v.api_settings_container.setTabEnabled(1, fields.generation_parameters)
+        if not fields.generation_parameters and v.api_settings_container.currentIndex() == 1:
+            v.api_settings_container.setCurrentIndex(0)
+        if descriptor.account_actions:
+            v.test_button.setVisible(True)
+            v.test_button.setEnabled(not bool(v.test_button.property('apiTesting')))
+        if hasattr(v, 'api_test_url_row') and not fields.api_url:
+            v.api_test_url_row.setVisible(False)
+        if hasattr(v, 'account_button'):
+            v.account_button.setVisible(descriptor.account_actions)
+            v.account_button.setEnabled(not bool(v.test_button.property('apiTesting')))
+            status = getattr(self, '_account_status', {})
+            label = status.get('email') if status.get('signed_in') else ''
+            v.account_button.setText(str(label or _("Аккаунты", "Accounts")))
+        if hasattr(v, 'models_button'):
+            v.models_button.setVisible(descriptor.account_actions)
+            available = descriptor.account_actions and self._can_load_account_models(protocol_id)
+            v.models_button.setEnabled(available and not bool(v.test_button.property('apiTesting')))
+            v.models_button.setToolTip('' if available else _(
+                "Сначала войдите через ChatGPT и разрешите использование плана.",
+                "Sign in with ChatGPT and allow plan usage first."))

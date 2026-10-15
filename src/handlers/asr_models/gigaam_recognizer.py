@@ -7,6 +7,7 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from handlers.asr_models.asr_languages import asr_language_field, asr_language_names
 from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
@@ -39,7 +40,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
                 "Offline speech recognition based on GigaAM (PyTorch). Runs in current process.",
                 "Offline speech recognition based on GigaAM (PyTorch). Runs in current process."
             ),
-            "languages": ["Russian"],
+            "languages": asr_language_names("gigaam"),
             "backend": "cpu",
             "gpu_vendor": ["NVIDIA", "CPU"],
             "tags": [
@@ -78,6 +79,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
     # ---------- UI schema ----------
     def settings_spec(self):
         return [
+            asr_language_field("gigaam"),
             {"key": "device", "label_ru": "Device", "label_en": "Device",
              "type": "combobox", "options": ["auto", "cuda", "cpu"], "default": "auto"},
             {"key": "model", "label_ru": "Model", "label_en": "Model",
@@ -87,7 +89,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         ]
 
     def get_default_settings(self):
-        return {"device": "auto", "model": self.DEFAULT_MODEL}
+        return {"device": "auto", "model": self.DEFAULT_MODEL, "language": "ru"}
 
     def apply_settings(self, settings: dict):
         dev = settings.get("device")

@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from handlers.asr_models.asr_languages import asr_language_field, asr_language_names
 from core.installables.helpers import build_runtime_ctx
 from core.events import Events, get_event_bus
 from core.backends import BackendKind
@@ -38,7 +39,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
                 "Offline speech recognition based on GigaAM via ONNXRuntime. "
                 "Uses DirectML on Windows with CPU fallback and runs in a separate process."
             ),
-            "languages": ["Russian"],
+            "languages": asr_language_names("gigaam_onnx"),
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "tags": [
                 _("ONNX", "ONNX"),
@@ -86,6 +87,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
     # ---------- UI schema ----------
     def settings_spec(self):
         return [
+            asr_language_field("gigaam_onnx"),
             {"key": "device", "label_ru": "Устройство", "label_en": "Device",
              "type": "combobox", "options": ["auto", "cpu", "dml"], "default": "auto"},
             {"key": "model", "label_ru": "Модель", "label_en": "Model",
@@ -95,7 +97,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         ]
 
     def get_default_settings(self):
-        return {"device": "auto", "model": self.DEFAULT_MODEL}
+        return {"device": "auto", "model": self.DEFAULT_MODEL, "language": "ru"}
 
     def apply_settings(self, settings: dict):
         dev = settings.get("device")

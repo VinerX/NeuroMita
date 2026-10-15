@@ -1,4 +1,5 @@
 from __future__ import annotations
+from domain.audio_input import MicrophoneSelection
 
 import asyncio
 import builtins
@@ -202,7 +203,7 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                  patch("handlers.ai_engine.services.asr_service.AudioCaptureService", _FailingAudioCapture):
                 await service._start_live_internal(
                     engine_id="google",
-                    mic_index=18,
+                    selection=MicrophoneSelection(index=18),
                     engine_settings={},
                     sample_rate=16000,
                     chunk_size=512,
@@ -230,7 +231,7 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                  patch("handlers.ai_engine.services.asr_service.AudioCaptureService", _ReadyAudioCapture):
                 started = await service._start_live_internal(
                     engine_id="google",
-                    mic_index=18,
+                    selection=MicrophoneSelection(index=18),
                     engine_settings={},
                     sample_rate=16000,
                     chunk_size=512,
@@ -642,7 +643,7 @@ class AsrEngineStatusReasonTests(unittest.TestCase):
 
         class RecordingCapture(_ReadyAudioCapture):
             async def run(self, **kwargs):
-                opened_devices.append(kwargs["microphone_index"])
+                opened_devices.append(kwargs["selection"].index)
                 await super().run(**kwargs)
 
         def get_recognizer(_engine_id):

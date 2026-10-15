@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from handlers.asr_models.asr_languages import asr_language_field, asr_language_names
 from core.backends import BackendKind
 from core.installables.helpers import build_runtime_ctx
 from core.install_requirements import InstallRequirement, check_requirements
@@ -18,11 +19,13 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     - is_installed() проверяет наличие python-модулей по requirements
     """
 
+    LANGUAGES = dict(zip(asr_language_field("google")["options"], asr_language_names("google")))
+
     MODEL_CONFIGS = [
         {
             "id": "google",
             "name": "Google",
-            "languages": ["Russian", "English"],
+            "languages": asr_language_names("google"),
             "gpu_vendor": ["CPU"],
             "tags": [
                 _("Онлайн", "Online"),
@@ -42,15 +45,22 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
         self._sr = None
+        self.language = "ru-RU"
 
     def settings_spec(self):
-        return []
+        return [
+            asr_language_field("google"),
+        ]
 
     def get_default_settings(self):
-        return {}
+        return {"language": "ru-RU"}
 
     def apply_settings(self, settings: dict):
-        pass
+        if "language" in settings:
+            result = self.validate_settings({"language": settings["language"]})
+            if not result.ok:
+                raise ValueError(f"Invalid ASR language: {result.errors}")
+        self.language = str(settings.get("language") or "ru-RU").strip() or "ru-RU"
 
     def requirements(self):
         return [
@@ -108,7 +118,7 @@ class GoogleRecognizer(SpeechRecognizerInterface):
         )
 
         try:
-            return recognizer.recognize_google(audio, language="ru-RU")
+            return recognizer.recognize_google(audio, language=self.language)
         except self._sr.UnknownValueError:
             return None
         except Exception as e:

@@ -6,6 +6,8 @@ import os
 import uuid
 from typing import Any, Callable
 
+from PyQt6.QtCore import QTimer
+
 from core.events import Events, get_event_bus
 from domain.conversation_message_ids import ConversationMessageIds
 from core.services import services, use
@@ -51,7 +53,11 @@ class AppShellController:
 
     @property
     def backend_ready(self) -> bool:
-        return not self._closed and self._main_controller is not None and not self.is_closing
+        return (
+            not self._closed
+            and self._main_controller is not None
+            and not self.is_closing
+        )
 
     @property
     def backend_error(self) -> str:
@@ -67,6 +73,9 @@ class AppShellController:
         self._main_controller = controller
         self._backend_error = ""
         self._presentation.app.attach_backend(controller)
+        history_signal = getattr(self._view, "load_chat_history_signal", None)
+        if history_signal is not None:
+            QTimer.singleShot(0, history_signal.emit)
 
     def detach_backend(self) -> None:
         self._main_controller = None
@@ -105,15 +114,21 @@ class AppShellController:
             self._presentation.app.detach_backend()
 
     def load_history(self, *, request_id: str = "", character_id: str = "") -> None:
-        self._event_bus.emit(Events.Model.LOAD_HISTORY, {
-            "request_id": str(request_id or ""),
-            "character_id": str(character_id or ""),
-        })
+        self._event_bus.emit(
+            Events.Model.LOAD_HISTORY,
+            {
+                "request_id": str(request_id or ""),
+                "character_id": str(character_id or ""),
+            },
+        )
 
     def load_more_history(self, *, character_id: str = "") -> None:
-        self._event_bus.emit(Events.Model.LOAD_MORE_HISTORY, {
-            "character_id": str(character_id or ""),
-        })
+        self._event_bus.emit(
+            Events.Model.LOAD_MORE_HISTORY,
+            {
+                "character_id": str(character_id or ""),
+            },
+        )
 
     def clear_chat(self) -> None:
         self._view.render_chat_cleared()
@@ -133,7 +148,9 @@ class AppShellController:
         return result
 
     @staticmethod
-    def _merge_text(explicit_text: str, entry_text: str, *, merge_with_entry: bool) -> tuple[str, bool]:
+    def _merge_text(
+        explicit_text: str, entry_text: str, *, merge_with_entry: bool
+    ) -> tuple[str, bool]:
         explicit = str(explicit_text or "").strip()
         draft = str(entry_text or "").strip()
         if not merge_with_entry or not draft:
@@ -261,11 +278,26 @@ class AppShellController:
                 for image in all_image_data
             ]
             if not user_input:
-                label = _("<\u0418\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f>", "<Images>")
-                if staged_image_data and not current_image_data and not explicit_image_data:
-                    label = _("<\u041f\u0440\u0438\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u043d\u044b\u0435 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f>", "<Attached Images>")
-                elif (current_image_data or explicit_image_data) and not staged_image_data:
-                    label = _("<\u0418\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u044d\u043a\u0440\u0430\u043d\u0430>", "<Screen Image>")
+                label = _(
+                    "<\u0418\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f>",
+                    "<Images>",
+                )
+                if (
+                    staged_image_data
+                    and not current_image_data
+                    and not explicit_image_data
+                ):
+                    label = _(
+                        "<\u041f\u0440\u0438\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u043d\u044b\u0435 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f>",
+                        "<Attached Images>",
+                    )
+                elif (
+                    current_image_data or explicit_image_data
+                ) and not staged_image_data:
+                    label = _(
+                        "<\u0418\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u044d\u043a\u0440\u0430\u043d\u0430>",
+                        "<Screen Image>",
+                    )
                 image_content.insert(0, {"type": "text", "content": label + "\n"})
 
         self._view.render_outgoing_message(
@@ -312,8 +344,12 @@ class AppShellController:
             capture = services().get_optional(CaptureService)
             if capture is None:
                 return [], []
-            screen_frames = list(capture.capture_screen(screen_limit) or []) if auto_screen else []
-            camera_frames = list(capture.camera_frames(camera_limit) or []) if auto_camera else []
+            screen_frames = (
+                list(capture.capture_screen(screen_limit) or []) if auto_screen else []
+            )
+            camera_frames = (
+                list(capture.camera_frames(camera_limit) or []) if auto_camera else []
+            )
             return screen_frames, camera_frames
 
         run_async(self._view, worker, on_ready, name="app-send-capture")
@@ -321,7 +357,9 @@ class AppShellController:
     def request_debug_info(self, on_ready: Callable[[str], None]) -> None:
         def worker() -> str:
             model = services().get_optional(ModelStateService)
-            return str(model.debug_info() if model is not None else "Debug info not available")
+            return str(
+                model.debug_info() if model is not None else "Debug info not available"
+            )
 
         run_async(self._view, worker, on_ready, name="app-debug-info")
 
@@ -351,13 +389,31 @@ class AppShellController:
             )
             from managers.rag.readiness import rag_readiness
 
+            if method == "API":
+                from services.contracts import RemoteVoiceService
+
+                remote = services().get_optional(RemoteVoiceService)
+                from services.contracts import CharacterRegistry
+
+                registry = services().get_optional(CharacterRegistry)
+                character_id = registry.current_id() if registry else None
+                voice_initialized = bool(
+                    use_voice
+                    and remote
+                    and remote.status(character_id=character_id).verified
+                )
+
             rag = rag_readiness()
             return {
                 "game_connected": bool(use(GameLinkService).is_connected()),
                 "silero_connected": bool(telegram and telegram.is_silero_connected()),
                 "mic_active": bool(speech and speech.mic_active()),
-                "screen_capture_active": bool(capture and capture.screen_capture_active()),
-                "camera_capture_active": bool(capture and capture.camera_capture_active()),
+                "screen_capture_active": bool(
+                    capture and capture.screen_capture_active()
+                ),
+                "camera_capture_active": bool(
+                    capture and capture.camera_capture_active()
+                ),
                 "rag_enabled": bool(settings.get("RAG_ENABLED", False)),
                 # Настройка говорит «включён», а плашка обязана говорить «работает»:
                 # модели RAG поднимаются уже после старта.
@@ -371,14 +427,22 @@ class AppShellController:
 
         run_async(self._view, worker, on_ready, name="app-status-colors")
 
-    def insert_debug_message(self, *, text: str, character_id: str, as_user: bool) -> None:
+    def insert_debug_message(
+        self, *, text: str, character_id: str, as_user: bool
+    ) -> None:
         self._event_bus.emit(
             Events.Chat.INSERT_SYSTEM_MESSAGE,
-            {"text": str(text), "character_id": str(character_id), "as_user": bool(as_user)},
+            {
+                "text": str(text),
+                "character_id": str(character_id),
+                "as_user": bool(as_user),
+            },
         )
 
     def save_snapshot(self, character_id: str) -> None:
-        self._event_bus.emit(Events.Chat.SAVE_SNAPSHOT, {"character_id": str(character_id)})
+        self._event_bus.emit(
+            Events.Chat.SAVE_SNAPSHOT, {"character_id": str(character_id)}
+        )
 
     def load_snapshot(self, *, file_path: str, character_id: str) -> None:
         self._event_bus.emit(
@@ -408,4 +472,6 @@ class AppShellController:
         if local_voice is None:
             return False, False
         normalized = str(model_id or "")
-        return bool(local_voice.is_installed(normalized)), bool(local_voice.check_initialized(normalized))
+        return bool(local_voice.is_installed(normalized)), bool(
+            local_voice.check_initialized(normalized)
+        )

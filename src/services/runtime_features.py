@@ -491,7 +491,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             return None
 
         startup_trace.mark(f"feature.{name}.ready", generation=generation)
-        logger.info(f"Optional feature ready: {name}")
+        logger.debug("Optional feature ready: %s", name)
         return instance
 
     def _on_setting_changed(self, change) -> None:

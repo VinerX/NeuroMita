@@ -4,11 +4,13 @@
 UI или тяжёлые зависимости. Реализации живут рядом (services/*) либо у своего
 владельца-контроллера.
 """
+
 from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -16,11 +18,18 @@ from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional
 
 from core.cancellation import CancellationToken
 from core.request_policy import RequestPolicy
-
+from core.remote_voice import (
+    RemoteVoiceConfiguration,
+    RemoteVoicePreset,
+    RemoteVoiceStatus,
+    RemoteVoiceTemplate,
+)
+from domain.audio_input import ASRInputDevice, AudioInputCatalog
 
 # ---------------------------------------------------------------------------
 # Настройки
 # ---------------------------------------------------------------------------
+
 
 class SettingsService(ABC):
     """Единственный источник значений настроек."""
@@ -132,7 +141,9 @@ class ASRSettingsService(ABC):
     def set_model_option(self, engine_id: str, key: str, value: Any) -> None: ...
 
     @abstractmethod
-    def subscribe(self, callback: Callable[[Any], None], *, replay: bool = False) -> Any: ...
+    def subscribe(
+        self, callback: Callable[[Any], None], *, replay: bool = False
+    ) -> Any: ...
 
 
 class InstallableCatalogService(ABC):
@@ -217,7 +228,11 @@ class InstallableCatalogService(ABC):
         ):
             metadata = row.get("metadata") if isinstance(row, dict) else None
             status = row.get("status") if isinstance(row, dict) else None
-            if isinstance(metadata, dict) and isinstance(status, dict) and status.get("ready"):
+            if (
+                isinstance(metadata, dict)
+                and isinstance(status, dict)
+                and status.get("ready")
+            ):
                 result.append(str(metadata.get("item_id") or ""))
         return tuple(item for item in result if item)
 
@@ -365,7 +380,12 @@ class AppVarsService(ABC):
 # Персонажи
 # ---------------------------------------------------------------------------
 
+
 class CharacterRegistry(ABC):
+    def stats_of(self, character_id: str) -> Dict[str, float]:
+        """Read statistics without materializing a character runtime."""
+        return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+
     @abstractmethod
     def get(self, character_id: str) -> Any:
         """Ссылка на персонажа или None, если такого id нет."""
@@ -397,6 +417,7 @@ class CharacterRegistry(ABC):
 # asyncio loop
 # ---------------------------------------------------------------------------
 
+
 class LoopService(ABC):
     @abstractmethod
     def loop(self) -> asyncio.AbstractEventLoop:
@@ -413,6 +434,7 @@ class LoopService(ABC):
 # ---------------------------------------------------------------------------
 # Связь с игрой
 # ---------------------------------------------------------------------------
+
 
 class GameLinkService(ABC):
     @abstractmethod
@@ -455,6 +477,7 @@ class RuntimeCapabilitiesService(ABC):
 # История
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class PreparedHistory:
     messages: List[Dict[str, Any]]
@@ -494,6 +517,7 @@ class HistoryService(ABC):
 # ---------------------------------------------------------------------------
 # Разговор
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class DialogueParticipant:
@@ -606,7 +630,9 @@ class DialogueRuntimeSnapshot:
 
     @property
     def is_active(self) -> bool:
-        return bool(self.conversation_id and self.source is not DialogueRuntimeSource.NONE)
+        return bool(
+            self.conversation_id and self.source is not DialogueRuntimeSource.NONE
+        )
 
     @property
     def auto_turns_remaining(self) -> int:
@@ -661,7 +687,11 @@ def parse_dialogue_turn_context(raw: object) -> Optional[DialogueTurnContext]:
         if participant.actor_id:
             participants.append(participant)
 
-    spoken = [str(actor_id).strip() for actor_id in (raw.get("spoken_actor_ids", []) or []) if str(actor_id).strip()]
+    spoken = [
+        str(actor_id).strip()
+        for actor_id in (raw.get("spoken_actor_ids", []) or [])
+        if str(actor_id).strip()
+    ]
     return DialogueTurnContext(
         conversation_id=str(raw.get("conversation_id") or "").strip(),
         epoch=_int("epoch"),
@@ -707,6 +737,7 @@ def parse_dialogue_turn_context(raw: object) -> Optional[DialogueTurnContext]:
 # Промпт
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PromptBuildRequest:
     character: Any
@@ -750,6 +781,7 @@ class PromptBuilderService(ABC):
 # ---------------------------------------------------------------------------
 # Генерация
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ChatGenerationRequest:
@@ -829,15 +861,20 @@ class UtilityGenerationResult:
 
 class GenerationService(ABC):
     @abstractmethod
-    def generate_chat(self, request: ChatGenerationRequest) -> Optional[ChatGenerationResult]: ...
+    def generate_chat(
+        self, request: ChatGenerationRequest
+    ) -> Optional[ChatGenerationResult]: ...
 
     @abstractmethod
-    def generate_utility(self, request: UtilityGenerationRequest) -> UtilityGenerationResult: ...
+    def generate_utility(
+        self, request: UtilityGenerationRequest
+    ) -> UtilityGenerationResult: ...
 
 
 # ---------------------------------------------------------------------------
 # API-пресеты
 # ---------------------------------------------------------------------------
+
 
 class ApiPresetService(ABC):
     """Чтение эффективных API-пресетов. На пути генерации резолвер берёт пресет
@@ -900,9 +937,7 @@ class TelegramService(ABC):
 
 class TelegramAuthService(ABC):
     @abstractmethod
-    async def request(
-        self, kind: str, *, error: str = "", attempt: int = 1
-    ) -> str: ...
+    async def request(self, kind: str, *, error: str = "", attempt: int = 1) -> str: ...
 
     @abstractmethod
     def resolve(self, request_id: str, value: str) -> bool: ...
@@ -918,8 +953,6 @@ class ModelStateService(ABC):
     @abstractmethod
     def token_stats(self) -> Dict[str, Any]: ...
 
-    @abstractmethod
-    def schedule_g4f_update(self, version: str = "latest") -> bool: ...
 
 
 class ChatService(ABC):
@@ -981,6 +1014,37 @@ class CaptureService(ABC):
 class AudioStateService(ABC):
     @abstractmethod
     def is_waiting_answer(self) -> bool: ...
+
+
+class RemoteVoiceService(ABC):
+    @abstractmethod
+    def templates(self) -> tuple[RemoteVoiceTemplate, ...]: ...
+
+    @abstractmethod
+    def configuration(self) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def save_preset(self, preset: RemoteVoicePreset) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def select_preset(self, preset_id: str) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def add_preset(self, template_id: str) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def delete_preset(self, preset_id: str) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def status(self, *, character_id: str | None = None) -> RemoteVoiceStatus: ...
+
+    @abstractmethod
+    async def synthesize(
+        self, text: str, *, character_id: str | None = None
+    ) -> str: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
 
 
 class LocalVoiceService(ABC):
@@ -1064,8 +1128,15 @@ class SpeechService(ABC):
     def capture_state(self) -> ASRCaptureState: ...
 
     @abstractmethod
-    def set_radio_capture(self, *, active: bool, session_id: str, generation: int,
-                          cancelled: bool = False, renew: bool = False) -> bool: ...
+    def set_radio_capture(
+        self,
+        *,
+        active: bool,
+        session_id: str,
+        generation: int,
+        cancelled: bool = False,
+        renew: bool = False,
+    ) -> bool: ...
 
     @abstractmethod
     def release_radio_capture(self, session_id: str) -> None: ...
@@ -1082,8 +1153,15 @@ class SpeechService(ABC):
     @abstractmethod
     def microphone_list_async(
         self,
-        callback: Callable[[List[str], BaseException | None], None],
+        callback: Callable[[List[ASRInputDevice], BaseException | None], None],
     ) -> None: ...
+
+    def microphone_catalog_async(self, callback) -> None:
+        self.microphone_list_async(
+            lambda devices, error=None: callback(
+                AudioInputCatalog(tuple(devices or ())), error
+            )
+        )
 
     @abstractmethod
     def asr_models_glossary_async(
@@ -1161,13 +1239,26 @@ class AIEngineAdministrationService(ABC):
     def topology_snapshot(self) -> Dict[str, Any]: ...
 
     @abstractmethod
-    def switch_topology(self, mode: str, *, timeout: float = 30.0) -> Dict[str, Any]: ...
+    def switch_topology(
+        self, mode: str, *, timeout: float = 30.0
+    ) -> Dict[str, Any]: ...
 
     @abstractmethod
     def suspend_for_maintenance(self, *, timeout: float = 15.0) -> bool: ...
 
     @abstractmethod
     def resume_after_maintenance(self) -> bool: ...
+
+    @contextmanager
+    def maintenance_session(self, *, timeout: float = 15.0):
+        """Keep inference suspended until filesystem maintenance finishes."""
+        if not self.suspend_for_maintenance(timeout=timeout):
+            raise RuntimeError("AI workers could not be stopped")
+        try:
+            yield
+        finally:
+            if not self.resume_after_maintenance():
+                raise RuntimeError("AI workers could not be restarted")
 
 
 class HardwareInventoryService(ABC):

@@ -47,12 +47,57 @@ class SidebarSection:
 
 
 DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
-    SidebarSection("home", "Главная", "Home", "fa6s.house", "Обзор лаунчера", "Launcher overview"),
-    SidebarSection("settings", "Настройки", "Settings", "fa6s.gear", "Системные параметры", "System controls"),
-    SidebarSection("sandbox", "Песочница", "Sandbox", "fa6s.flask", "Быстрый вход в чат", "Quick chat access"),
-    SidebarSection("news", "Релизы", "Releases", "fa6s.rectangle-list", "Лента релизов проекта", "Project release feed"),
-    SidebarSection("wiki", "Вики", "Wiki", "fa6s.book-open", "Полная база знаний по приложению", "Full in-app knowledge base"),
-    SidebarSection("logs", "Логи", "Logs", "fa6s.list", "События и диагностика", "Events and diagnostics"),
+    SidebarSection(
+        "home", "Главная", "Home", "fa6s.house", "Обзор лаунчера", "Launcher overview"
+    ),
+    SidebarSection(
+        "settings",
+        "Настройки",
+        "Settings",
+        "fa6s.gear",
+        "Системные параметры",
+        "System controls",
+    ),
+    SidebarSection(
+        "sandbox",
+        "Песочница",
+        "Sandbox",
+        "fa6s.flask",
+        "Быстрый вход в чат",
+        "Quick chat access",
+    ),
+    SidebarSection(
+        "news",
+        "Релизы",
+        "Releases",
+        "fa6s.rectangle-list",
+        "Лента релизов проекта",
+        "Project release feed",
+    ),
+    SidebarSection(
+        "gallery",
+        "Галерея",
+        "Gallery",
+        "fa6s.images",
+        "Фотографии из игры",
+        "In-game photos",
+    ),
+    SidebarSection(
+        "wiki",
+        "Вики",
+        "Wiki",
+        "fa6s.book-open",
+        "Полная база знаний по приложению",
+        "Full in-app knowledge base",
+    ),
+    SidebarSection(
+        "logs",
+        "Логи",
+        "Logs",
+        "fa6s.list",
+        "События и диагностика",
+        "Events and diagnostics",
+    ),
 )
 
 

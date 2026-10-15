@@ -1,3 +1,4 @@
+from ui.widgets.settings_section_header import create_settings_header
 from core.error_utils import format_exception
 from ui.gui_templates import create_settings_section
 from ui.settings.runtime_options import (
@@ -23,8 +24,7 @@ def setup_screen_analysis_controls(gui, parent_layout, *, runtime_options_view_m
     from ui.settings.runtime_options import attach_runtime_options_view_model
 
     attach_runtime_options_view_model(gui, runtime_options_view_model)
-    # No group header here: the page already carries the "Изображения и камера"
-    # title, so a separate "Настройки экрана" heading just duplicated it.
+    create_settings_header(parent_layout, "screen")
 
     # Первая CollapsibleSection
     screen_analysis_config = [
@@ -386,9 +386,9 @@ def _setup_mita_camera_section(gui, parent_layout) -> None:
             'default_checkbutton': False,
             'tooltip': _(
                 'Активирует систему камеры на голове Миты.\n'
-                'Необходимо назначить Camera-компонент в Unity-сцене.',
+                'Камера создаётся автоматически у активной Миты в Unity.',
                 'Activates the head-mounted camera system on Mita.\n'
-                'Requires a Camera component assigned in the Unity scene.'
+                'Unity creates the camera automatically on the active Mita.'
             ),
         },
         {

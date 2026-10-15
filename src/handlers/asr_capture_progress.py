@@ -60,6 +60,10 @@ class CaptureProgressTracker:
             for old_key, entry in list(self._entries.items()):
                 c = entry["context"]
                 if c.get("epoch") != state.get("epoch") or c.get("session_id") != state.get("session_id"):
+                    self._revision += 1
+                    self._emit(dict(phase="cancelled", active=False, pending=0,
+                                    error="capture_cancelled", revision=self._revision,
+                                    capture_id=capture_id(c), capture_context=dict(c)))
                     del self._entries[old_key]
                     continue
                 entry["active"] = old_key == key and listening

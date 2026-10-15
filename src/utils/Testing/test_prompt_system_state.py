@@ -71,7 +71,7 @@ class PromptSystemStateTests(unittest.TestCase):
     def _build_dialogue_prompt(self, enabled):
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
-        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+        controller._build_system_state_message = lambda *_args, **_kwargs: {"role": "system", "content": "[system state]"}
         result = controller.build(PromptBuildRequest(
             character=self._DialogueCharacter(),
             event_type="chat",
@@ -124,7 +124,7 @@ class PromptSystemStateTests(unittest.TestCase):
             [{"role": "system", "content": "[active memory]"}],
             [],
         )
-        controller._build_system_state_message = lambda: {
+        controller._build_system_state_message = lambda *_args, **_kwargs: {
             "role": "system",
             "content": "[system state]",
         }
@@ -154,7 +154,7 @@ class PromptSystemStateTests(unittest.TestCase):
             [],
             [],
         )
-        controller._build_system_state_message = lambda: {
+        controller._build_system_state_message = lambda *_args, **_kwargs: {
             "role": "system",
             "content": "[system state]",
         }
@@ -188,7 +188,7 @@ class PromptSystemStateTests(unittest.TestCase):
 
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
-        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+        controller._build_system_state_message = lambda *_args, **_kwargs: {"role": "system", "content": "[system state]"}
 
         enabled = controller.build(PromptBuildRequest(
             character=_Character(),
@@ -231,7 +231,7 @@ class PromptSystemStateTests(unittest.TestCase):
 
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
-        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+        controller._build_system_state_message = lambda *_args, **_kwargs: {"role": "system", "content": "[system state]"}
         with patch("controllers.prompt_controller.use", return_value=_History()):
             result = controller.build(PromptBuildRequest(
                 character=_Character(),
@@ -253,11 +253,11 @@ class PromptSystemStateTests(unittest.TestCase):
     def test_character_environment_is_common_dynamic_context_before_input(self):
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
-        controller._build_system_state_message = lambda: {
+        controller._build_system_state_message = lambda *_args, **_kwargs: {
             "role": "system",
             "content": "[system state]",
         }
-        controller._build_character_environment_message = lambda: {
+        controller._build_character_environment_message = lambda *_args, **_kwargs: {
             "role": "system",
             "content": "[Character Environment]",
         }
@@ -290,7 +290,7 @@ class PromptSystemStateTests(unittest.TestCase):
             [{"role": "system", "content": "[active memory]"}],
             [],
         )
-        controller._build_system_state_message = lambda: {
+        controller._build_system_state_message = lambda *_args, **_kwargs: {
             "role": "system",
             "content": "[system state]",
         }

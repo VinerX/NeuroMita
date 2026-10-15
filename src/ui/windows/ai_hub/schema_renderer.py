@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from core.setting_behaviors import evaluate_setting_behaviors
 from utils import getTranslationVariant as _tr
+from localization.schema import bind_option_labels
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -217,6 +218,8 @@ class SchemaForm(QWidget):
             opts = {"values": list(raw)}
         else:
             opts = {}
+        if "display_labels" not in opts and isinstance(entry.get("option_labels"), dict):
+            opts["display_labels"] = dict(entry["option_labels"])
         if "default" not in opts and entry.get("default") is not None:
             opts["default"] = entry.get("default")
         return opts
@@ -238,15 +241,17 @@ class SchemaForm(QWidget):
             return
         type_ = self._normalize_type(entry.get("type"))
         opts = self._normalize_options(entry)
-        locked = bool(entry.get("locked"))
+        locked = bool(entry.get("locked")) or entry.get("enabled") is False
 
         widget = self._build_widget(type_, opts, locked, key)
         if widget is None:
             return
+        if isinstance(widget, QComboBox):
+            bind_option_labels(widget, entry)
         self._widgets[key] = widget
 
         label_text = self._resolve_label(entry, key)
-        help_text = str(entry.get("help") or "")
+        help_text = str(entry.get("help") or _tr(entry.get("help_ru", ""), entry.get("help_en", "")))
         label = QLabel(label_text)
         label.setObjectName("AIHubFormLabel")
         label.setWordWrap(True)

@@ -600,7 +600,7 @@ class ChatServerNew:
         target = str(data.get("client_id") or "")
         payload = {key: data[key] for key in (
             "capture_id", "press_generation", "revision", "phase", "active", "pending", "error",
-            "command_generation", "accepted") if key in data}
+            "command_generation", "accepted", "through_generation") if key in data}
         payload.update(type="asr_capture_state", session_id=target)
         return self._schedule_asr_message(target, payload)
 

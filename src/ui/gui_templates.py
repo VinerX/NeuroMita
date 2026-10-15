@@ -289,12 +289,16 @@ def create_button_group(gui, parent, buttons_config):
 
 
 def _apply_setting_row_disabled(frame: QWidget, disabled: bool) -> None:
-    frame.setProperty("disabled", "true" if disabled else "false")
-    style = frame.style()
-    if style is not None:
-        style.unpolish(frame)
-        style.polish(frame)
-    frame.update()
+    value = "true" if disabled else "false"
+    if frame.property("disabled") == value:
+        return
+    frame.setProperty("disabled", value)
+    for widget in (frame, *frame.findChildren(QWidget)):
+        style = widget.style()
+        if style is not None:
+            style.unpolish(widget)
+            style.polish(widget)
+        widget.update()
 
 
 def _fmt_tooltip(text: str) -> str:

@@ -164,6 +164,7 @@ class ServerController:
             "MITA_CAMERA_JPEG_QUALITY",
             "MITA_CAMERA_USE_FILE_TRANSFER",
             # Image transport: "shared_files" | "socket" | "auto"
+            "ENABLE_IMAGE_ANALYSIS",
             "IMAGE_TRANSPORT_MODE",
         ]
 
@@ -432,15 +433,12 @@ class ServerController:
             return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
 
         try:
-            ch = use(CharacterRegistry).get(cid)
-            if ch is not None and hasattr(ch, "get_stats_dict"):
-                v = ch.get_stats_dict()
-                if isinstance(v, dict):
-                    return {
-                        "attitude": float(v.get("attitude", 60.0)),
-                        "boredom": float(v.get("boredom", 10.0)),
-                        "stress": float(v.get("stress", 5.0)),
-                    }
+            values = use(CharacterRegistry).stats_of(cid)
+            return {
+                "attitude": float(values.get("attitude", 60.0)),
+                "boredom": float(values.get("boredom", 10.0)),
+                "stress": float(values.get("stress", 5.0)),
+            }
         except Exception:
             pass
 
@@ -472,9 +470,10 @@ class ServerController:
                 settings[str(setting)] = False
                 continue
             defaults = {
+                "ENABLE_IMAGE_ANALYSIS": True,
                 "ASR_INPUT_MODE": "radio",
                 "MIC_ACTIVE": False,
-                "MIC_MUTE_WHILE_SPEAKING": True,
+                "MIC_MUTE_WHILE_SPEAKING": False,
                 "MITA_DIALOGUE_AUTO": True,
                 "DIALOGUE_AUTO_ROUNDS": 1,
                 "DIALOGUE_MAX_CHAIN_TURNS": 24,
@@ -847,6 +846,3 @@ class ServerController:
         if surface_character_ids:
             ui_payload["surface_character_ids"] = list(dict.fromkeys(surface_character_ids))
         self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, ui_payload)
-
-
-

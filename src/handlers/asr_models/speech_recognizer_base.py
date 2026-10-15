@@ -45,6 +45,15 @@ def validate_asr_model_settings(schema: List[dict], values: dict) -> ValidationR
         name = str(key or "").strip()
         if name and name not in allowed:
             errors[name] = "Unknown setting."
+    if "language" in values:
+        language_field = next(
+            (item for item in (schema or []) if isinstance(item, dict) and item.get("key") == "language"),
+            None,
+        )
+        if language_field is not None and "options" in language_field:
+            language = values["language"]
+            if not isinstance(language, str) or language not in language_field["options"]:
+                errors["language"] = "Unsupported recognition language."
     return ValidationResult(ok=not errors, errors=errors)
 
 

@@ -25,6 +25,50 @@ _SECRET_QUERY_KEYS = frozenset(
 )
 
 
+def valid_http_url(value: str) -> bool:
+    value = str(value or "").strip()
+    if not value or any(char.isspace() or ord(char) < 32 for char in value):
+        return False
+    try:
+        parts = urlsplit(value)
+        return (
+            parts.scheme.lower() in {"http", "https"}
+            and bool(parts.hostname)
+            and (parts.port is None or 1 <= parts.port <= 65535)
+        )
+    except ValueError:
+        return False
+
+
+_HTTP_STATUS_MESSAGES = {
+    400: "Сервер отклонил запрос. Проверьте адрес проверки и выбранный формат API.",
+    401: "Сервер не принял авторизацию. Проверьте API-ключ и его срок действия.",
+    403: "Сервер запретил доступ. Проверьте права API-ключа и доступность сервиса для вашей учётной записи.",
+    404: "Адрес проверки не найден. Проверьте URL: для списка моделей обычно используется /v1/models.",
+    405: "Адрес проверки не поддерживает GET-запрос. Укажите endpoint списка моделей вместо endpoint генерации.",
+    408: "Сервер прекратил ожидание запроса. Повторите проверку; если ошибка остаётся, проверьте соединение и нагрузку сервера.",
+    429: "Превышен лимит запросов или квота API. Повторите позже и проверьте лимиты и баланс у провайдера.",
+    500: "На сервере произошла внутренняя ошибка. Повторите позже; для локального сервера проверьте его журнал ошибок.",
+    502: "Шлюз или прокси получил некорректный ответ от сервера. Повторите позже; если используете прокси, проверьте его подключение к API.",
+    503: "Сервис временно недоступен. Он может быть перегружен или на обслуживании. Повторите проверку позже; для локального API проверьте, что сервер запущен и готов принимать запросы.",
+    504: "Шлюз или прокси не дождался ответа сервера. Повторите позже и проверьте доступность API за прокси.",
+}
+
+
+def http_status_message(status_code: int | None, *, translate=None) -> str:
+    translate = translate or (lambda text: text)
+    status = int(status_code or 0)
+    explanation = _HTTP_STATUS_MESSAGES.get(status)
+    if explanation is None:
+        if 400 <= status < 500:
+            explanation = "Сервер отклонил запрос. Проверьте адрес, авторизацию и выбранный формат API."
+        elif status >= 500:
+            explanation = "Сервер не смог обработать запрос. Повторите позже; для локального API проверьте журнал сервера."
+        else:
+            explanation = "Сервер вернул неожиданный ответ. Проверьте адрес проверки и выбранный формат API."
+    return f"HTTP {status_code or '?'}\n\n{translate(explanation)}"
+
+
 def sanitize_url(url: str | httpx.URL | None) -> str | None:
     if not url:
         return None
@@ -90,6 +134,10 @@ class NetworkConnectionError(NetworkRequestError):
     pass
 
 
+class NetworkConfigurationError(NetworkRequestError):
+    pass
+
+
 class HttpResponseError(NetworkRequestError):
     pass
 
@@ -104,11 +152,26 @@ def classify_network_error(
     if isinstance(exc, NetworkRequestError):
         return exc
 
-    request = getattr(exc, "request", None)
+    try:
+        request = getattr(exc, "request", None)
+    except RuntimeError:
+        request = None
     response = getattr(exc, "response", None)
     resolved_method = method or getattr(request, "method", None)
     resolved_url = url or getattr(request, "url", None) or getattr(response, "url", None)
     detail = _compact_detail(exc)
+
+    if isinstance(exc, (httpx.InvalidURL, httpx.UnsupportedProtocol)):
+        return NetworkConfigurationError(
+            service_id=service_id,
+            message="Укажите корректный HTTP или HTTPS URL с адресом сервера.",
+            code="network.url.invalid",
+            phase="configuration",
+            method=resolved_method,
+            url=str(resolved_url) if resolved_url else None,
+            retryable=False,
+            detail=detail,
+        )
 
     tls_error = _find_tls_error(exc)
     if tls_error is not None:
@@ -132,7 +195,7 @@ def classify_network_error(
         status_code = getattr(response, "status_code", None)
         return HttpResponseError(
             service_id=service_id,
-            message=f"Сервер вернул HTTP {status_code or 'error'}.",
+            message=http_status_message(status_code),
             code="http.status",
             phase="response",
             method=resolved_method,

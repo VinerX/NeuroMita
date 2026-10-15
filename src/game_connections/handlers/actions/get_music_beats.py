@@ -145,7 +145,7 @@ class GetMusicBeatsAction:
                 })
 
                 elapsed = time.perf_counter() - t0
-                logger.info(
+                logger.debug(
                     f"[BeatSync] ready req={req_tag} method={method} bpm={bpm_estimate:.1f} "
                     f"beats={len(all_beats)} chunks={chunks_sent} duration={duration:.2f}s elapsed={elapsed:.2f}s"
                 )
@@ -172,7 +172,7 @@ class GetMusicBeatsAction:
             })
 
             elapsed = time.perf_counter() - t0
-            logger.info(
+            logger.debug(
                 f"[BeatSync] ready req={req_tag} method={result.method} bpm={result.bpm_estimate:.1f} "
                 f"beats={len(result.beats)} duration={result.duration:.2f}s elapsed={elapsed:.2f}s"
             )

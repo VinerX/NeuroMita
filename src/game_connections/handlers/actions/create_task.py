@@ -44,6 +44,8 @@ def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
     """
     if not _has_context_images(context):
         return False
+    if str(context.get("image_source") or "").strip().lower() == "tv_observer":
+        return False
     if str(context.get("image_source") or "").strip().lower() == "mita_camera":
         return True
     if context.get("mita_camera", False):
@@ -166,6 +168,11 @@ async def _dispatch_task(
     Emit CREATE_TASK then SEND_MESSAGE — the shared boilerplate for most event types.
     Returns the created task, or None if creation failed (abort update already sent).
     """
+    from core.tv_observation import format_tv_observation
+    tv_context = format_tv_observation((game_state or {}).get("tv_observation"))
+    if tv_context:
+        system_input = "\n".join(part for part in (system_input, tv_context) if part)
+
     task_data: dict = {
         "character": character_id,
         "character_stats": character_stats,
@@ -368,11 +375,13 @@ class CreateTaskAction:
             "runtime_capabilities": context.get("runtime_capabilities", ""),
             "intent_rules": context.get("intent_rules", ""),
             "runtime_events": context.get("runtime_events", []),
+            "tv_observation": context.get("tv_observation", {}),
         }
         # Runtime events are consumable by this exact turn and must never leak
         # into the persistent fallback state used by non-Unity requests.
         persistent_game_state = dict(game_state_payload)
         persistent_game_state.pop("runtime_events", None)
+        persistent_game_state.pop("tv_observation", None)
         persistent_game_state["character_id"] = str(character_id or "")
         if should_update_unity_dialogue_target(event_type, resolved_speaker):
             target_changed = use(GameLinkService).set_unity_target_character_id(character_id)

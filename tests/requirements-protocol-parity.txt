@@ -1,0 +1,10 @@
+pytest>=8,<10
+httpx[http2]>=0.27,<0.29
+pydantic>=2.10,<3
+portalocker>=3,<5
+pywin32>=308; sys_platform == "win32"
+numpy>=1.26,<3
+pygame>=2.6,<3
+Pillow>=10,<13
+requests>=2.32,<3
+chess>=1.11,<2

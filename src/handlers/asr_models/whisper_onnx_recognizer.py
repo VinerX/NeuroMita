@@ -14,6 +14,7 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from handlers.asr_models.asr_languages import asr_language_field, asr_language_names
 from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
@@ -39,7 +40,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                 "Offline Whisper in ONNX format. Uses DirectML on Windows for AMD, Intel, and NVIDIA "
                 "with CPU fallback. Model and transformers files are downloaded locally."
             ),
-            "languages": ["Multilingual"],
+            "languages": asr_language_names("whisper_onnx"),
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "tags": [
                 _("Локально", "Local"),
@@ -88,8 +89,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         return [
             {"key": "device", "label_ru": "Устройство", "label_en": "Device",
              "type": "combobox", "options": ["auto", "dml", "cpu"], "default": "auto"},
-            {"key": "language", "label_ru": "Язык", "label_en": "Language",
-             "type": "combobox", "options": ["ru", "en", "auto"], "default": "ru"},
+            asr_language_field("whisper_onnx"),
             {"key": "max_tokens", "label_ru": "Макс. токенов", "label_en": "Max tokens",
              "type": "combobox", "options": [96, 128, 160, 192, 224, 256], "default": 192},
         ]
@@ -98,6 +98,10 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         return {"device": "auto", "language": "ru", "max_tokens": 192}
 
     def apply_settings(self, settings: dict):
+        if "language" in settings:
+            result = self.validate_settings({"language": settings["language"]})
+            if not result.ok:
+                raise ValueError(f"Invalid ASR language: {result.errors}")
         dev = settings.get("device")
         lang = settings.get("language")
         mt = settings.get("max_tokens")

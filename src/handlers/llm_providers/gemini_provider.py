@@ -20,6 +20,8 @@ from .base import (
     normalize_usage_payload,
 )
 from .streaming import StreamAccumulator, iter_json_values, iter_sse_data, track_response_body
+from .message_transforms import iter_positioned_messages
+from services.structured_response_capabilities import provider_schema_options
 
 
 class GeminiProvider(BaseProvider):
@@ -114,8 +116,6 @@ class GeminiProvider(BaseProvider):
 
         return [{"role": "user", "parts": [{"text": prefix}]}] + contents
 
-    _INLINE_SYSTEM_TAG = "[SYSTEM INFO]"
-
     @staticmethod
     def _parts_have_payload(parts: list) -> bool:
         for part in parts or []:
@@ -128,27 +128,11 @@ class GeminiProvider(BaseProvider):
             return True  # inline_data / functionCall и прочее непустое по определению
         return False
 
-    @classmethod
-    def _prefix_parts_with_tag(cls, parts: list) -> list:
-        """Помечает parts тегом, чтобы служебный блок не читался как речь игрока."""
-        out = [dict(p) if isinstance(p, dict) else p for p in parts]
-        for part in out:
-            if isinstance(part, dict) and "text" in part:
-                part["text"] = f"{cls._INLINE_SYSTEM_TAG}\n{part.get('text', '')}"
-                return out
-        out.insert(0, {"text": cls._INLINE_SYSTEM_TAG})
-        return out
-
     def _format_messages_for_gemini_api(self, messages):
         system_parts = []
         contents = []
-        # system до первого сообщения диалога — статическая инструкция, ей место
-        # в system_instruction. Всё, что идёт дальше, позиционно: такой блок
-        # относится к соседним репликам, и в system_instruction он оторвался бы
-        # от своего места и уехал в начало запроса. Поэтому едет в contents.
-        dialogue_started = False
 
-        for msg in messages:
+        for msg, inline_system in iter_positioned_messages(messages):
             role = msg.get("role")
             content = msg.get("content")
 
@@ -156,13 +140,12 @@ class GeminiProvider(BaseProvider):
                 parts = self._format_content_to_parts(content)
                 if not self._parts_have_payload(parts):
                     continue
-                if dialogue_started:
+                if inline_system:
                     contents.append({"role": "user", "parts": self._prefix_parts_with_tag(parts)})
                 else:
                     system_parts.extend(parts)
                 continue
 
-            dialogue_started = True
             gemini_role = "model" if role == "assistant" else "user"
             contents.append({"role": gemini_role, "parts": self._format_content_to_parts(content)})
 
@@ -170,6 +153,16 @@ class GeminiProvider(BaseProvider):
         if system_parts:
             result["system_instruction"] = {"parts": system_parts}
         return result
+
+    @staticmethod
+    def _prefix_parts_with_tag(parts: list) -> list:
+        out = [dict(part) if isinstance(part, dict) else part for part in parts]
+        for part in out:
+            if isinstance(part, dict) and "text" in part:
+                part["text"] = f"[SYSTEM INFO]\n{part.get('text', '')}"
+                return out
+        out.insert(0, {"text": "[SYSTEM INFO]"})
+        return out
 
     def _format_content_to_parts(self, content):
         parts = []
@@ -353,18 +346,11 @@ class GeminiProvider(BaseProvider):
             mode = caps.get("structured_output_mode", "gemini_schema")
             if mode != "gemini_prompt":
                 model_cls = req.structured_model or StructuredResponse
-                has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
-                excl = set() if has_custom else {"custom_fields"}
-                if not caps.get("schema_reasoning", True):
-                    excl.add("reasoning")
-                excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
-                segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
-                if not caps.get("schema_intents", True):
-                    segment_excl.add("intents")
+                schema_options = provider_schema_options(caps)
                 schema = model_cls.gemini_schema_dict(
-                    exclude_fields=excl or None,
-                    exclude_segment_fields=segment_excl or None,
-                    require_fields=set(caps.get("structured_required_fields") or ()) or None,
+                    exclude_fields=schema_options["exclude_fields"] or None,
+                    exclude_segment_fields=schema_options["exclude_segment_fields"] or None,
+                    require_fields=schema_options["require_fields"] or None,
                 )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")

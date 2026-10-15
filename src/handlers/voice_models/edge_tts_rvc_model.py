@@ -745,10 +745,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     model_path_to_use = parent_model_path
 
                 if not os.path.exists(model_path_to_use):
-                    logger.error(f"RVC model file not found: {model_path_to_use}")
-                    self.initialized = False
-                    self.initialized_for = None
-                    return False
+                    raise FileNotFoundError(f"RVC model file not found: {model_path_to_use}")
 
                 logger.info(
                     f"Creating RVC runtime: model_path='{model_path_to_use}', "
@@ -781,7 +778,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             )
             self.initialized = False
             self.initialized_for = None
-            return False
+            raise
 
     def _default_model_path(self) -> str:
         # Base model for RVC init when the character's own model isn't available.

@@ -1,0 +1,285 @@
+from dataclasses import asdict
+from unittest.mock import Mock
+
+import localization
+import pytest
+from PyQt6.QtCore import QCoreApplication, QEvent
+from PyQt6.QtCore import Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
+
+from controllers.api_presets_controller import ApiTemplate
+from controllers.gui.api_settings.editor_mixin import EditorMixin
+from controllers.gui.voiceover_controller import VoiceoverGuiController
+from localization.live import language_changed_signal
+from presets.api_templates import API_TEMPLATES_DATA
+from styles.compose import get_main_window_stylesheet
+from ui.settings.api_settings.ui import build_api_settings_ui
+from ui.widgets.tr_combobox import TRQComboBox
+from ui.widgets.template_url_edit import TemplateUrlEdit
+
+_APP = None
+
+
+@pytest.fixture
+def editor():
+    global _APP
+    _APP = QApplication.instance() or QApplication([])
+    root = QWidget()
+    root.settings = {}
+    build_api_settings_ui(root, QVBoxLayout(root))
+    result = EditorMixin()
+    result.view = root
+    result._is_loading_ui = False
+    result._snapshot = None
+    result._help_links_lang_hook_bound = True
+    result._refresh_model_settings_dialect = Mock()
+    result._set_dirty = Mock()
+    result._state_save_timer = Mock()
+    result._active_template = None
+    result.current_preset_data = {}
+    yield result
+    root.close()
+    root.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    _APP.processEvents()
+
+
+def test_custom_check_field_controls_check_button_live(editor):
+    root = editor.view
+    editor._apply_help_links({})
+    assert not root.api_test_url_row.isHidden()
+    assert root.test_button.isHidden()
+    root.api_test_url_row.set_text("http://lan:5000/models")
+    editor._on_field_changed()
+    assert not root.test_button.isHidden()
+    root.api_test_url_row.set_text("")
+    editor._on_field_changed()
+    assert root.test_button.isHidden()
+
+
+@pytest.mark.parametrize("width", [1000, 1530])
+@pytest.mark.parametrize("account, dirty", [(False, False), (True, False), (True, True)])
+def test_header_buttons_fit_their_text_in_one_row(editor, width, account, dirty):
+    root = editor.view
+    root.setStyleSheet(get_main_window_stylesheet())
+    root.provider_label.setText("Google AI Studio 1")
+    root.api_type_label.setText("ChatGPT Plan (Codex)" if account else "Google AI Studio")
+    root.preset_active_tag.show()
+    root.account_button.setVisible(account)
+    root.api_settings_container.show()
+    root.cancel_button.setVisible(dirty)
+    root.resize(width, 800)
+    root.show()
+    app = QApplication.instance()
+    app.processEvents()
+    header = root.findChild(QFrame, "ApiEditorHeader")
+
+    for email, action, save in [
+        ("Accounts", "Check", "Save"),
+        ("example.long.account@gmail.com", "Continue with ChatGPT", "Зберегти"),
+        ("Аккаунты", "Проверить", "Сохранить"),
+    ]:
+        root.account_button.setText(email)
+        root.test_button.setText(action)
+        root.save_preset_button.setText(save)
+        QTest.qWait(20)
+        buttons = [button for button in (
+            root.test_button, root.cancel_button, root.save_preset_button
+        ) if not button.isHidden()]
+        assert header.height() <= 70
+        assert len({button.y() for button in buttons}) == 1
+        for button in buttons:
+            assert button.width() >= button.sizeHint().width()
+            assert header.contentsRect().contains(button.geometry())
+        assert root.preset_active_tag.width() == root.preset_active_tag.sizeHint().width()
+        assert not header.isAncestorOf(root.account_button)
+        assert root.api_settings_container.isAncestorOf(root.account_button)
+        if account:
+            assert root.account_button.width() >= root.account_button.sizeHint().width()
+
+
+@pytest.mark.parametrize("template", API_TEMPLATES_DATA, ids=lambda item: item["name"])
+def test_builtin_template_hides_check_url_with_stale_custom_value(editor, template):
+    root = editor.view
+    editor._active_template = asdict(ApiTemplate(**template))
+    root.api_url_row.set_text(template.get("url") or template.get("url_tpl", "").replace("{model}", "test-model"))
+    root.api_test_url_row.set_text("https://generativelanguage.googleapis.com/v1beta/models?key={key}")
+    editor._apply_help_links(template)
+    assert root.api_test_url_row.isHidden()
+
+
+def test_local_server_address_is_not_reset_when_other_fields_change(editor):
+    root = editor.view
+    template = next(item for item in API_TEMPLATES_DATA if item["id"] == 9)
+    editor._active_template = asdict(ApiTemplate(**template))
+    root.template_combo.addItem("LM Studio", 9)
+    root.api_url_row.set_text("http://192.168.1.10:9000")
+    root.api_model_row.set_text("another-model")
+    editor._on_field_changed()
+    assert root.api_url_row.text() == "http://192.168.1.10:9000/v1/chat/completions"
+    assert root.api_test_url_row.isHidden()
+    assert not root.test_button.isHidden()
+
+
+def test_segment_navigation_and_https_input(editor):
+    root = editor.view
+    template = next(item for item in API_TEMPLATES_DATA if item["id"] == 9)
+    control = root.api_url_row.edit
+    control.set_template(template)
+    control.setText(template["url"])
+    control.setParent(None)
+    control.resize(650, 40)
+    control.show()
+    control.activateWindow()
+    QApplication.processEvents()
+    control.address_edit.setFocus()
+    control.address_edit.setCursorPosition(0)
+    QTest.keyClick(control.address_edit, Qt.Key.Key_Left)
+    assert control.secure_edit.hasFocus()
+    QTest.keyClicks(control.secure_edit, "s")
+    assert control.address_edit.hasFocus()
+    assert control.text() == "https://127.0.0.1:1234/v1/chat/completions"
+    QTest.keyClick(control.address_edit, Qt.Key.Key_Backspace)
+    assert control.secure_edit.hasFocus()
+    assert control.secure_edit.text() == ""
+    QTest.keyClick(control.secure_edit, Qt.Key.Key_Right)
+    assert control.address_edit.hasFocus()
+    assert control.address_edit.cursorPosition() == 0
+    QTest.keyClick(control.address_edit, Qt.Key.Key_Left)
+    QTest.keyClick(control.secure_edit, Qt.Key.Key_Tab)
+    assert control.address_edit.hasFocus()
+    assert control.suffix.text() == "/v1/chat/completions"
+    control.close()
+    control.deleteLater()
+
+
+def test_paste_full_url_distributes_segments_and_preserves_template_path(editor):
+    root = editor.view
+    template = next(item for item in API_TEMPLATES_DATA if item["id"] == 9)
+    control = root.api_url_row.edit
+    control.set_template(template)
+    QApplication.clipboard().setText(
+        "https://lan.example:444/proxy/v1/chat/completions"
+    )
+    QTest.keyClick(
+        control.address_edit, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+    )
+    assert control.secure_edit.text() == "s"
+    assert control.address_edit.text() == "lan.example:444/proxy"
+    assert control.text() == "https://lan.example:444/proxy/v1/chat/completions"
+    control.address_edit.deselect()
+    QTest.keyClick(
+        control.address_edit, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier
+    )
+    assert QApplication.clipboard().text() == control.text()
+    control.set_template({})
+    assert control.text() == "https://lan.example:444/proxy/v1/chat/completions"
+    control.setText("https://custom/api/endpoint")
+    assert control.text() == "https://custom/api/endpoint"
+
+
+def test_address_expands_smoothly_and_pushes_locked_path(editor):
+    control = TemplateUrlEdit()
+    control.set_template(next(item for item in API_TEMPLATES_DATA if item["id"] == 9))
+    control.setText("http://lan:1234/v1/chat/completions")
+    control.resize(740, 40)
+    control.show()
+    QApplication.processEvents()
+    initial_width = control._address_viewport.width()
+    initial_path_x = control.suffix.x()
+    control.address_edit.setText("my-long-lan-server-address:1234")
+    assert control._address_viewport.width() == initial_width
+    QTest.qWait(200)
+    assert control._address_viewport.width() > initial_width
+    assert control.suffix.x() > initial_path_x
+    assert (
+        control.text() == "http://my-long-lan-server-address:1234/v1/chat/completions"
+    )
+    control.address_edit.setText("x" * 400)
+    QTest.qWait(200)
+    assert control.suffix.geometry().right() < control.width()
+    control.close()
+    control.deleteLater()
+
+
+def test_typing_does_not_scroll_address_before_expansion_finishes(editor):
+    control = TemplateUrlEdit()
+    control.set_template(next(item for item in API_TEMPLATES_DATA if item["id"] == 9))
+    control.setText("http://127.0.0.1:1234/v1/chat/completions")
+    control.resize(740, 40)
+    control.show()
+    control.activateWindow()
+    QApplication.processEvents()
+    control.address_edit.setFocus()
+    control.address_edit.setCursorPosition(len(control.address_edit.text()))
+    before = control.address_edit.inputMethodQuery(
+        Qt.InputMethodQuery.ImCursorRectangle
+    ).x()
+    QTest.keyClicks(control.address_edit, "W")
+    QApplication.processEvents()
+    after = control.address_edit.inputMethodQuery(
+        Qt.InputMethodQuery.ImCursorRectangle
+    ).x()
+    assert (
+        after - before >= control.address_edit.fontMetrics().horizontalAdvance("W") - 2
+    )
+    control.close()
+    control.deleteLater()
+
+
+def test_local_voice_names_retranslate_from_catalog_without_selection_signal(
+    editor, monkeypatch
+):
+    language = ["EN"]
+    monkeypatch.setattr(localization, "_current_language", lambda: language[0])
+    combo = TRQComboBox()
+    VoiceoverGuiController._add_local_model_item(combo, "cached name", "high_clf5")
+    VoiceoverGuiController._add_local_model_item(combo, "cached name", "high+low")
+    combo.setCurrentIndex(1)
+    changed = Mock()
+    combo.currentIndexChanged.connect(changed)
+    assert combo.itemText(0) == "Cross-Lingual F5-TTS (English & Chinese)"
+    assert combo.currentText() == "F5-TTS + RVC (Russian)"
+    language[0] = "RU"
+    language_changed_signal().emit("RU")
+    assert combo.itemText(0) == "Cross-Lingual F5-TTS (Английский и китайский)"
+    assert combo.currentText() == "F5-TTS + RVC (Русский)"
+    assert combo.currentData() == "high+low"
+    changed.assert_not_called()
+    language[0] = "EN"
+    language_changed_signal().emit("EN")
+    assert combo.currentText() == "F5-TTS + RVC (Russian)"
+    changed.assert_not_called()
+    combo.deleteLater()
+
+
+def test_invalid_url_disables_check_and_shows_inline_hint(editor):
+    root = editor.view
+    root.api_test_url_row.set_text("111232132")
+    editor._on_field_changed()
+    assert not root.api_test_url_error.isHidden()
+    assert not root.test_button.isEnabled()
+    root.api_test_url_row.set_text("http://localhost:1234/v1/models")
+    editor._on_field_changed()
+    assert root.api_test_url_error.isHidden()
+    assert root.test_button.isEnabled()
+
+
+def test_protocol_section_uses_compact_labels_and_summary(editor):
+    from controllers.gui.api_settings.protocols_mixin import ProtocolsMixin
+    from presets.api_protocols import API_PROTOCOLS_DATA
+    from PyQt6.QtWidgets import QLabel
+
+    controller = ProtocolsMixin()
+    controller.view = editor.view
+    controller._protocols = {p["id"]: p for p in API_PROTOCOLS_DATA}
+    controller._protocol_default_id = "openai_compatible_default"
+    controller._populate_protocol_combo()
+    root = editor.view
+    assert root.protocol_section.icon_label is not None
+    assert isinstance(root.protocol_transforms_view, QLabel)
+    assert "True" not in root.protocol_info_label.text()
+    for index in range(root.protocol_row.combo.count()):
+        assert "[" not in root.protocol_row.combo.itemText(index)
+        assert root.protocol_row.combo.itemData(index) in controller._protocols

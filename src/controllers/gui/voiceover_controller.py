@@ -1,3 +1,7 @@
+from core.telegram_credentials import (
+    TELEGRAM_CREDENTIAL_KEYS,
+    telegram_credentials_complete,
+)
 from core.error_utils import format_exception
 import os
 import time
@@ -55,36 +59,84 @@ class VoiceoverGuiController(BaseController):
         eb = self.event_bus
 
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_refresh, weak=False)
-        eb.subscribe(Events.GUI.VOICEOVER_MODEL_SELECTED, self._on_model_selected, weak=False)
-        eb.subscribe(Events.GUI.VOICEOVER_MODEL_REINITIALIZE, self._on_model_reinitialize, weak=False)
+        eb.subscribe(
+            Events.GUI.VOICEOVER_MODEL_SELECTED, self._on_model_selected, weak=False
+        )
+        eb.subscribe(
+            Events.GUI.VOICEOVER_MODEL_INITIALIZE, self._on_model_initialize, weak=False
+        )
+        eb.subscribe(
+            Events.GUI.VOICEOVER_MODEL_REINITIALIZE,
+            self._on_model_reinitialize,
+            weak=False,
+        )
 
         self._subscribe_settings(
             self._on_setting_changed,
             keys=(
-                "USE_VOICEOVER", "VOICEOVER_METHOD", "NM_CURRENT_VOICEOVER",
-                "LOCAL_VOICE_LOAD_LAST", "LOCAL_VOICE_INIT_ON_REQUEST",
-                "VOICE_LANGUAGE", "TG_AUTOCONNECT",
+                "USE_VOICEOVER",
+                "VOICEOVER_METHOD",
+                "NM_CURRENT_VOICEOVER",
+                "LOCAL_VOICE_LOAD_LAST",
+                "LOCAL_VOICE_INIT_ON_REQUEST",
+                "VOICE_LANGUAGE",
+                "TG_AUTOCONNECT",
             ),
         )
 
-        eb.subscribe(Events.Audio.UPDATE_MODEL_LOADING_STATUS, self._on_loading_status, weak=False)
-        eb.subscribe(Events.Audio.FINISH_MODEL_LOADING, self._on_finish_loading, weak=False)
-        eb.subscribe(Events.Audio.CANCEL_MODEL_LOADING, self._on_cancel_loading, weak=False)
+        eb.subscribe(
+            Events.Audio.UPDATE_MODEL_LOADING_STATUS,
+            self._on_loading_status,
+            weak=False,
+        )
+        eb.subscribe(
+            Events.Audio.FINISH_MODEL_LOADING, self._on_finish_loading, weak=False
+        )
+        eb.subscribe(
+            Events.Audio.CANCEL_MODEL_LOADING, self._on_cancel_loading, weak=False
+        )
 
-        eb.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_models_changed, weak=False)
-        eb.subscribe(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, self._on_models_changed, weak=False)
-        eb.subscribe(Events.VoiceModel.REFRESH_MODEL_PANELS, self._on_models_changed, weak=False)
-        eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_models_changed, weak=False)
-        eb.subscribe(Events.Install.COMPONENT_STATUS, self._on_component_status, weak=False)
+        eb.subscribe(
+            Events.VoiceModel.MODEL_INSTALL_FINISHED,
+            self._on_models_changed,
+            weak=False,
+        )
+        eb.subscribe(
+            Events.VoiceModel.MODEL_UNINSTALL_FINISHED,
+            self._on_models_changed,
+            weak=False,
+        )
+        eb.subscribe(
+            Events.VoiceModel.REFRESH_MODEL_PANELS, self._on_models_changed, weak=False
+        )
+        eb.subscribe(
+            Events.Install.CATALOG_CHANGED, self._on_models_changed, weak=False
+        )
+        eb.subscribe(
+            Events.Install.COMPONENT_STATUS, self._on_component_status, weak=False
+        )
 
-        eb.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_tg_connected_event, weak=False)
-        eb.subscribe(Events.Telegram.START_SILERO, self._on_tg_start_requested, weak=False)
-        eb.subscribe(Events.Telegram.STOP_SILERO, self._on_tg_stop_requested, weak=False)
-        eb.subscribe(Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False)
+        eb.subscribe(
+            Events.Telegram.SET_SILERO_CONNECTED,
+            self._on_tg_connected_event,
+            weak=False,
+        )
+        eb.subscribe(
+            Events.Telegram.START_SILERO, self._on_tg_start_requested, weak=False
+        )
+        eb.subscribe(
+            Events.Telegram.STOP_SILERO, self._on_tg_stop_requested, weak=False
+        )
+        eb.subscribe(
+            Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False
+        )
 
     def _get_installed_models_set(self) -> set[str]:
         now = time.time()
-        if self._installed_models_cache is not None and (now - self._installed_models_cache_ts) < 1.0:
+        if (
+            self._installed_models_cache is not None
+            and (now - self._installed_models_cache_ts) < 1.0
+        ):
             return set(self._installed_models_cache)
 
         installed = self._canonical_installed_model_ids()
@@ -124,17 +176,28 @@ class VoiceoverGuiController(BaseController):
             )
             self.event_bus.emit(
                 Events.GUI.SHOW_ERROR_MESSAGE,
-                {"title": _("Ошибка", "Error"), "message": format_exception(exc) + "\n\n" + _("Смотреть логи", "See logs")},
+                {
+                    "title": _("Ошибка", "Error"),
+                    "message": format_exception(exc)
+                    + "\n\n"
+                    + _("Смотреть логи", "See logs"),
+                },
             )
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
     def _reinitialize_local_model(self, model_id: str) -> None:
         local_voice = services().get_optional(LocalVoiceService)
         if local_voice is None:
-            self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                "title": _("Ошибка", "Error"),
-                "message": _("Сервис локальной озвучки недоступен.", "Local voice service is unavailable."),
-            })
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {
+                    "title": _("Ошибка", "Error"),
+                    "message": _(
+                        "Сервис локальной озвучки недоступен.",
+                        "Local voice service is unavailable.",
+                    ),
+                },
+            )
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
             return
         try:
@@ -144,10 +207,15 @@ class VoiceoverGuiController(BaseController):
                 f"Failed to schedule local voice reinitialization for '{model_id}': {format_exception(exc)}",
                 exc_info=True,
             )
-            self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                "title": _("Ошибка", "Error"),
-                "message": format_exception(exc) + "\n\n" + _("Смотреть логи", "See logs"),
-            })
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {
+                    "title": _("Ошибка", "Error"),
+                    "message": format_exception(exc)
+                    + "\n\n"
+                    + _("Смотреть логи", "See logs"),
+                },
+            )
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
     def preload_global_status_on_startup(self):
@@ -192,6 +260,7 @@ class VoiceoverGuiController(BaseController):
             "LOCAL_VOICE_LOAD_LAST",
             "VOICE_LANGUAGE",
             "TG_AUTOCONNECT",
+            *TELEGRAM_CREDENTIAL_KEYS,
         }
         if key not in relevant:
             return
@@ -199,7 +268,9 @@ class VoiceoverGuiController(BaseController):
         def apply():
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
-                self.event_bus.emit(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang})
+                self.event_bus.emit(
+                    Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang}
+                )
             autoload_trigger = key in {
                 "USE_VOICEOVER",
                 "VOICEOVER_METHOD",
@@ -265,16 +336,28 @@ class VoiceoverGuiController(BaseController):
                 return
 
             if ok:
-                self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-                    "title": _("Готово", "Done"),
-                    "message": _("Нейро-ядро озвучки перезапущено.", "Voice AI engine restarted."),
-                })
+                self.event_bus.emit(
+                    Events.GUI.SHOW_INFO_MESSAGE,
+                    {
+                        "title": _("Готово", "Done"),
+                        "message": _(
+                            "Нейро-ядро озвучки перезапущено.",
+                            "Voice AI engine restarted.",
+                        ),
+                    },
+                )
             else:
-                self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                    "title": _("Ошибка", "Error"),
-                    "message": _("Не удалось перезапустить нейро-ядро озвучки.", "Failed to restart voice AI engine.")
-                            + (f"\n\n{format_exception(err)}" if err else "")
-                })
+                self.event_bus.emit(
+                    Events.GUI.SHOW_ERROR_MESSAGE,
+                    {
+                        "title": _("Ошибка", "Error"),
+                        "message": _(
+                            "Не удалось перезапустить нейро-ядро озвучки.",
+                            "Failed to restart voice AI engine.",
+                        )
+                        + (f"\n\n{format_exception(err)}" if err else ""),
+                    },
+                )
 
         self._ui(apply)
 
@@ -297,7 +380,9 @@ class VoiceoverGuiController(BaseController):
                     break
 
                 telegram = services().get_optional(TelegramService)
-                connected = telegram.is_silero_connected() if telegram is not None else None
+                connected = (
+                    telegram.is_silero_connected() if telegram is not None else None
+                )
 
                 if connected is not None:
                     self._tg_connected = connected
@@ -325,6 +410,11 @@ class VoiceoverGuiController(BaseController):
 
         use_voice = self._effective_use_voice()
         method = self._effective_method()
+        if hasattr(btn, "setProperty"):
+            btn.setProperty(
+                "connectionLocked",
+                self._tg_connected is True or self._tg_is_connecting(),
+            )
 
         active = bool(use_voice and method == "TG")
 
@@ -343,7 +433,16 @@ class VoiceoverGuiController(BaseController):
             btn.setText(_("Подключено", "Connected"))
             return
 
-        btn.setEnabled(True)
+        credentials = {}
+        for key, name in zip(
+            TELEGRAM_CREDENTIAL_KEYS, ("tg_api_id", "tg_api_hash", "tg_phone")
+        ):
+            field = getattr(self.view, name, None)
+            credentials[key] = (
+                field.text() if field is not None else self._get_setting(key, "")
+            )
+        complete = telegram_credentials_complete(credentials)
+        btn.setEnabled(complete)
         btn.setText(_("Подключиться к Telegram", "Connect Telegram"))
 
     def _maybe_autoconnect_tg(self):
@@ -355,6 +454,10 @@ class VoiceoverGuiController(BaseController):
         if not use_voice or method != "TG":
             return
 
+        if not telegram_credentials_complete(
+            {key: self._get_setting(key, "") for key in TELEGRAM_CREDENTIAL_KEYS}
+        ):
+            return
         autoconnect = bool(self._get_setting("TG_AUTOCONNECT", True))
         if not autoconnect:
             return
@@ -363,15 +466,25 @@ class VoiceoverGuiController(BaseController):
             return
 
         now = time.time()
-        if (now - float(self._tg_last_attempt_ts or 0.0)) < float(self._tg_attempt_cooldown_sec or 20.0):
+        if (now - float(self._tg_last_attempt_ts or 0.0)) < float(
+            self._tg_attempt_cooldown_sec or 20.0
+        ):
             return
 
         self._tg_last_attempt_ts = now
 
-        self.event_bus.emit(Events.Telegram.START_SILERO, {"source": "autoconnect", "force": False})
+        self.event_bus.emit(
+            Events.Telegram.START_SILERO, {"source": "autoconnect", "force": False}
+        )
 
     # ---------- Local models ----------
     def _on_model_selected(self, event: Event):
+        self._handle_model_action(event, initialize=False)
+
+    def _on_model_initialize(self, event: Event):
+        self._handle_model_action(event, initialize=True)
+
+    def _handle_model_action(self, event: Event, *, initialize: bool):
         model_id = str((event.data or {}).get("model_id") or "").strip()
         if not model_id:
             self._ui(lambda: self._sync_everything(allow_autoload=False))
@@ -380,13 +493,16 @@ class VoiceoverGuiController(BaseController):
         def apply():
             if not self._backend_enabled():
                 self._sync_everything(allow_autoload=False)
-                self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-                    "title": _("GUI-only режим", "GUI-only mode"),
-                    "message": _(
-                        "Озвучка недоступна: backend-контроллеры не запущены.",
-                        "Voiceover is unavailable because backend controllers are disabled.",
-                    ),
-                })
+                self.event_bus.emit(
+                    Events.GUI.SHOW_INFO_MESSAGE,
+                    {
+                        "title": _("GUI-only режим", "GUI-only mode"),
+                        "message": _(
+                            "Озвучка недоступна: backend-контроллеры не запущены.",
+                            "Voiceover is unavailable because backend controllers are disabled.",
+                        ),
+                    },
+                )
                 return
 
             cur = self._current_model_id_from_settings()
@@ -395,7 +511,7 @@ class VoiceoverGuiController(BaseController):
 
             self._save_setting("NM_CURRENT_VOICEOVER", model_id)
             self._set_combobox_by_model_id(model_id)
-            self._select_or_init_model_async(model_id)
+            self._prepare_local_model_async(model_id, initialize=initialize)
 
         self._ui(apply)
 
@@ -406,13 +522,16 @@ class VoiceoverGuiController(BaseController):
 
         def apply():
             if not self._backend_enabled():
-                self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-                    "title": _("GUI-only режим", "GUI-only mode"),
-                    "message": _(
-                        "Озвучка недоступна: backend-контроллеры не запущены.",
-                        "Voiceover is unavailable because backend controllers are disabled.",
-                    ),
-                })
+                self.event_bus.emit(
+                    Events.GUI.SHOW_INFO_MESSAGE,
+                    {
+                        "title": _("GUI-only режим", "GUI-only mode"),
+                        "message": _(
+                            "Озвучка недоступна: backend-контроллеры не запущены.",
+                            "Voiceover is unavailable because backend controllers are disabled.",
+                        ),
+                    },
+                )
                 return
             if model_id not in self._canonical_installed_model_ids():
                 self._sync_everything(allow_autoload=False)
@@ -423,7 +542,7 @@ class VoiceoverGuiController(BaseController):
 
         self._ui(apply)
 
-    def _select_or_init_model_async(self, model_id: str):
+    def _prepare_local_model_async(self, model_id: str, *, initialize: bool = False):
         if not model_id:
             return
 
@@ -436,7 +555,9 @@ class VoiceoverGuiController(BaseController):
         chip = getattr(self.view, "local_model_status_chip", None)
         btn = getattr(self.view, "local_model_action_btn", None)
         if chip is not None or btn is not None:
-            self._apply_model_status(chip, btn, "loading", _("Checking...", "Checking..."), None, "")
+            self._apply_model_status(
+                chip, btn, "loading", _("Checking...", "Checking..."), None, ""
+            )
 
         def worker():
             local_voice = services().get_optional(LocalVoiceService)
@@ -448,7 +569,11 @@ class VoiceoverGuiController(BaseController):
                 and local_voice
                 and local_voice.check_initialized(model_id, probe_worker=True)
             )
-            selected = bool(local_voice.select_model(model_id)) if initialized and local_voice else None
+            selected = (
+                bool(local_voice.select_model(model_id))
+                if initialized and local_voice
+                else None
+            )
 
             return {
                 "model_id": model_id,
@@ -478,7 +603,11 @@ class VoiceoverGuiController(BaseController):
             if not state["installed"]:
                 self._sync_local_model_status_from_snapshot(state)
                 self._emit_voice_icon_state_from_snapshot(state)
-                QMessageBox.information(self.view, _("Info", "Info"), _("Model is not installed.", "Model is not installed."))
+                QMessageBox.information(
+                    self.view,
+                    _("Info", "Info"),
+                    _("Model is not installed.", "Model is not installed."),
+                )
                 return
 
             if state["initialized"]:
@@ -486,10 +615,14 @@ class VoiceoverGuiController(BaseController):
                 self._sync_local_model_status_from_snapshot(state)
                 self._emit_voice_icon_state_from_snapshot(state)
                 if snapshot.get("selected") is False:
-                    QMessageBox.critical(self.view, _("Error", "Error"), _("Failed to activate model", "Failed to activate model"))
+                    QMessageBox.critical(
+                        self.view,
+                        _("Error", "Error"),
+                        _("Failed to activate model", "Failed to activate model"),
+                    )
                 return
 
-            if not self._begin_model_loading(current_id):
+            if not initialize or not self._begin_model_loading(current_id):
                 self._sync_local_model_status_from_snapshot(state)
                 self._emit_voice_icon_state_from_snapshot(state)
                 return
@@ -507,7 +640,7 @@ class VoiceoverGuiController(BaseController):
         model_id = str((event.data or {}).get("model_id", "") or "").strip()
 
         def apply():
-            had_dialog = (self._loading_dialog is not None)
+            had_dialog = self._loading_dialog is not None
             # #4: инициализацию могли отменить, пока движок догружал модель в
             # фоне. Если ждали НЕ этот model_id (после отмены _loading_model_id
             # обнуляется/восстанавливается) — не применяем результат: не делаем
@@ -530,15 +663,27 @@ class VoiceoverGuiController(BaseController):
                     if not had_dialog:
                         return
                     if ok:
-                        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-                            "title": _("Success", "Success"),
-                            "message": _("Model {} initialized successfully!", "Model {} initialized successfully!").format(model_id),
-                        })
+                        self.event_bus.emit(
+                            Events.GUI.SHOW_INFO_MESSAGE,
+                            {
+                                "title": _("Успешно", "Success"),
+                                "message": _(
+                                    "Модель {} успешно инициализирована!",
+                                    "Model {} initialized successfully!",
+                                ).format(model_id),
+                            },
+                        )
                     else:
-                        self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                            "title": _("Error", "Error"),
-                            "message": _("Model initialized, but failed to activate it.", "Model initialized, but failed to activate it."),
-                        })
+                        self.event_bus.emit(
+                            Events.GUI.SHOW_ERROR_MESSAGE,
+                            {
+                                "title": _("Ошибка", "Error"),
+                                "message": _(
+                                    "Модель инициализировалась, но не удалось активировать её.",
+                                    "Model initialized, but failed to activate it.",
+                                ),
+                            },
+                        )
 
                 self._select_model_async(model_id, after_select, show_error=False)
                 return
@@ -549,15 +694,27 @@ class VoiceoverGuiController(BaseController):
 
             if had_dialog and model_id:
                 if ok:
-                    self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-                        "title": _("Успешно", "Success"),
-                        "message": _("Модель {} успешно инициализирована!", "Model {} initialized successfully!").format(model_id)
-                    })
+                    self.event_bus.emit(
+                        Events.GUI.SHOW_INFO_MESSAGE,
+                        {
+                            "title": _("Успешно", "Success"),
+                            "message": _(
+                                "Модель {} успешно инициализирована!",
+                                "Model {} initialized successfully!",
+                            ).format(model_id),
+                        },
+                    )
                 else:
-                    self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                        "title": _("Ошибка", "Error"),
-                        "message": _("Модель инициализировалась, но не удалось активировать её.", "Model initialized, but failed to activate it.")
-                    })
+                    self.event_bus.emit(
+                        Events.GUI.SHOW_ERROR_MESSAGE,
+                        {
+                            "title": _("Ошибка", "Error"),
+                            "message": _(
+                                "Модель инициализировалась, но не удалось активировать её.",
+                                "Model initialized, but failed to activate it.",
+                            ),
+                        },
+                    )
 
         self._ui(apply)
 
@@ -578,6 +735,9 @@ class VoiceoverGuiController(BaseController):
         self._apply_voiceover_visibility_from_widgets()
         self._set_local_voice_loading_placeholders()
 
+        if not self._effective_use_voice():
+            self._emit_voice_icon_state()
+
         ticket = int(getattr(self, "_sync_ticket", 0) or 0) + 1
         self._sync_ticket = ticket
 
@@ -589,16 +749,24 @@ class VoiceoverGuiController(BaseController):
 
             local_voice = services().get_optional(LocalVoiceService)
             voice_models = services().get_optional(VoiceModelService)
-            cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
+            cfgs = (
+                voice_models.model_catalog_snapshot()
+                if voice_models is not None
+                else []
+            )
             installed_ids = self._canonical_installed_model_ids()
             catalog = services().get_optional(InstallableCatalogService)
             availability = None
             if catalog is not None and current_model_id:
-                selected_status = dict(catalog.get_status(f"tts:{current_model_id}") or {})
+                selected_status = dict(
+                    catalog.get_status(f"tts:{current_model_id}") or {}
+                )
                 if selected_status.get("code", "unknown") == "unknown":
                     availability = "checking"
                 else:
-                    availability = "ready" if selected_status.get("ready") else "unavailable"
+                    availability = (
+                        "ready" if selected_status.get("ready") else "unavailable"
+                    )
             if current_model_id and local_voice is not None:
                 initialized = bool(local_voice.check_initialized(current_model_id))
 
@@ -615,11 +783,17 @@ class VoiceoverGuiController(BaseController):
                 return
             self._apply_voiceover_snapshot(snapshot, allow_autoload=allow_autoload)
 
-        self._run_async(worker, apply, name="voiceover-sync")
+        def failed(_error):
+            if ticket == int(getattr(self, "_sync_ticket", 0) or 0):
+                self._emit_voice_icon_state()
+
+        self._run_async(worker, apply, failed, name="voiceover-sync")
 
     def _apply_voiceover_snapshot(self, snapshot: dict, *, allow_autoload: bool):
         cfgs = snapshot.get("cfgs") if isinstance(snapshot, dict) else []
-        installed_ids = snapshot.get("installed_ids") if isinstance(snapshot, dict) else set()
+        installed_ids = (
+            snapshot.get("installed_ids") if isinstance(snapshot, dict) else set()
+        )
         current_model_id = str((snapshot or {}).get("current_model_id") or "")
         initialized = bool((snapshot or {}).get("initialized"))
 
@@ -632,10 +806,15 @@ class VoiceoverGuiController(BaseController):
         self._installed_models_cache_ts = time.time()
 
         self._apply_voiceover_visibility_from_widgets()
-        current_model_id = self._update_local_models_combobox_from_snapshot(installed_ids, current_model_id)
+        current_model_id = self._update_local_models_combobox_from_snapshot(
+            installed_ids, current_model_id
+        )
 
         state = {
-            "availability": str(snapshot.get("availability") or ("ready" if current_model_id in installed_ids else "unavailable")),
+            "availability": str(
+                snapshot.get("availability")
+                or ("ready" if current_model_id in installed_ids else "unavailable")
+            ),
             "installed": bool(current_model_id and current_model_id in installed_ids),
             "initialized": initialized,
             "current_model_id": current_model_id,
@@ -648,9 +827,23 @@ class VoiceoverGuiController(BaseController):
         self._update_tg_connect_button()
         self._maybe_autoconnect_tg()
 
-        tg_active = bool(self._effective_use_voice() and self._effective_method() == "TG")
+        tg_active = bool(
+            self._effective_use_voice() and self._effective_method() == "TG"
+        )
         self._ensure_tg_polling(tg_active)
         self._emit_voice_icon_state_from_snapshot(state)
+
+    @staticmethod
+    def _add_local_model_item(combo, name: str, model_id: str) -> None:
+        from installables.catalog_manifest import CATALOG_BY_ID
+
+        entry = CATALOG_BY_ID.get(f"tts:{model_id}")
+        ru = str(entry.metadata_ru.get("title") or name) if entry else name
+        en = str(entry.metadata_en.get("title") or "") if entry else ""
+        if hasattr(combo, "add_tr_item"):
+            combo.add_tr_item(ru, en, value=model_id)
+        else:
+            combo.addItem(_(ru, en), model_id)
 
     def _build_model_name_map(self, cfgs) -> dict[str, str]:
         mp: dict[str, str] = {}
@@ -667,6 +860,7 @@ class VoiceoverGuiController(BaseController):
 
         try:
             from presets.local_voice_models import LOCAL_VOICE_MODELS
+
             for m in LOCAL_VOICE_MODELS:
                 mid = str(m.get("id") or "").strip()
                 name = str(m.get("name") or mid).strip()
@@ -689,9 +883,13 @@ class VoiceoverGuiController(BaseController):
         chip = getattr(self.view, "local_model_status_chip", None)
         btn = getattr(self.view, "local_model_action_btn", None)
         if chip is not None and btn is not None and not chip.isVisible():
-            self._apply_model_status(chip, btn, "loading", _("Проверка...", "Checking..."), None, "")
+            self._apply_model_status(
+                chip, btn, "loading", _("Проверка...", "Checking..."), None, ""
+            )
 
-    def _set_local_model_selector_state(self, *, has_models: bool, loading: bool = False) -> None:
+    def _set_local_model_selector_state(
+        self, *, has_models: bool, loading: bool = False
+    ) -> None:
         combo = getattr(self.view, "local_voice_combobox", None)
         empty = getattr(self.view, "local_voice_empty_status", None)
         settings_button = getattr(self.view, "local_model_settings_btn", None)
@@ -703,7 +901,9 @@ class VoiceoverGuiController(BaseController):
         if settings_button is not None:
             settings_button.setVisible(bool(has_models))
 
-    def _update_local_models_combobox_from_snapshot(self, installed_ids: set[str], current_model_id: str) -> str:
+    def _update_local_models_combobox_from_snapshot(
+        self, installed_ids: set[str], current_model_id: str
+    ) -> str:
         cb = getattr(self.view, "local_voice_combobox", None)
         if cb is None:
             return current_model_id
@@ -719,7 +919,7 @@ class VoiceoverGuiController(BaseController):
         try:
             cb.clear()
             for name, mid in items:
-                cb.addItem(name, mid)
+                self._add_local_model_item(cb, name, mid)
         finally:
             cb.blockSignals(False)
 
@@ -762,7 +962,9 @@ class VoiceoverGuiController(BaseController):
             self._emit_voice_icon_state_from_snapshot(state)
             return
 
-        self._emit_voice_icon_state_from_snapshot({**state, "current_model_id": model_id})
+        self._emit_voice_icon_state_from_snapshot(
+            {**state, "current_model_id": model_id}
+        )
 
         self._initialize_local_model(model_id)
 
@@ -791,17 +993,30 @@ class VoiceoverGuiController(BaseController):
         model_id = str(state.get("current_model_id") or "")
 
         if model_id and self._loading_model_id == model_id:
-            self._apply_model_status(chip, btn, "loading", _("Инициализация...", "Initializing..."), None, "")
+            self._apply_model_status(
+                chip, btn, "loading", _("Инициализация...", "Initializing..."), None, ""
+            )
             return
 
         if not model_id or not bool(state.get("installed")):
-            self._apply_model_status(chip, btn, "red", _("Не установлена", "Not installed"), "install", _("Установить", "Install"))
+            self._apply_model_status(
+                chip,
+                btn,
+                "red",
+                _("Не установлена", "Not installed"),
+                "install",
+                _("Установить", "Install"),
+            )
             return
 
         if bool(state.get("initialized")):
             self._apply_model_status(
-                chip, btn, "green", _("Готова", "Ready"),
-                "reinit", _("Переинициализировать", "Reinitialize"),
+                chip,
+                btn,
+                "green",
+                _("Готова", "Ready"),
+                "reinit",
+                _("Переинициализировать", "Reinitialize"),
             )
             return
 
@@ -819,46 +1034,68 @@ class VoiceoverGuiController(BaseController):
         method = self._effective_method()
 
         if not use_voice:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": None, "tooltip": None},
+            )
             return
 
-        if method == "TG":
+        if method in {"TG", "API"}:
             self._emit_voice_icon_state()
             return
 
         if method != "Local":
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": None, "tooltip": None},
+            )
             return
 
         model_id = str(state.get("current_model_id") or "")
         if not model_id:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "red",
-                "tooltip": _("Локальная озвучка: модель не выбрана", "Local voiceover: model not selected"),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "red",
+                    "tooltip": _(
+                        "Локальная озвучка: модель не выбрана",
+                        "Local voiceover: model not selected",
+                    ),
+                },
+            )
             return
 
         if self._loading_model_id == model_id:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "loading",
-                "tooltip": _("Инициализация модели...", "Initializing model..."),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "loading",
+                    "tooltip": _("Инициализация модели...", "Initializing model..."),
+                },
+            )
             return
 
         if state.get("availability") == "checking":
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice", "state": "loading",
-                "tooltip": _("Проверяем модель озвучки…", "Checking voice model…"),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "loading",
+                    "tooltip": _("Проверяем модель озвучки…", "Checking voice model…"),
+                },
+            )
             return
         if not bool(state.get("installed")):
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "red",
-                "tooltip": _("Модель не установлена", "Model not installed"),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "red",
+                    "tooltip": _("Модель не установлена", "Model not installed"),
+                },
+            )
             return
 
         initialized = bool(state.get("initialized"))
@@ -870,23 +1107,37 @@ class VoiceoverGuiController(BaseController):
         # Установлена, но не инициализирована — это НЕ «готово». Жёлтый "warn"
         # (настроено, но требует инициализации), а не зелёный, иначе индикатор
         # на вкладке противоречит плашке «Требуется инициализация» в теле страницы.
-        self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-            "category": "voice",
-            "state": "green" if initialized else "warn",
-            "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
-        })
+        self._publish_voice_indicator(
+            Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+            {
+                "category": "voice",
+                "state": "green" if initialized else "warn",
+                "tooltip": (
+                    _("Модель готова", "Model ready")
+                    if initialized
+                    else _("Требуется инициализация", "Initialization required")
+                ),
+            },
+        )
 
-    def _select_model_async(self, model_id: str, on_done=None, *, show_error: bool = True):
+    def _select_model_async(
+        self, model_id: str, on_done=None, *, show_error: bool = True
+    ):
         def worker():
             local_voice = services().get_optional(LocalVoiceService)
             return bool(local_voice and local_voice.select_model(model_id))
 
         def apply(ok: bool):
             if not ok and show_error:
-                self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                    "title": _("Ошибка", "Error"),
-                    "message": _("Не удалось активировать модель", "Failed to activate model"),
-                })
+                self.event_bus.emit(
+                    Events.GUI.SHOW_ERROR_MESSAGE,
+                    {
+                        "title": _("Ошибка", "Error"),
+                        "message": _(
+                            "Не удалось активировать модель", "Failed to activate model"
+                        ),
+                    },
+                )
 
             if callable(on_done):
                 on_done(bool(ok))
@@ -910,7 +1161,9 @@ class VoiceoverGuiController(BaseController):
         self._update_tg_connect_button()
         self._maybe_autoconnect_tg()
 
-        tg_active = bool(self._effective_use_voice() and self._effective_method() == "TG")
+        tg_active = bool(
+            self._effective_use_voice() and self._effective_method() == "TG"
+        )
         self._ensure_tg_polling(tg_active)
 
         self._emit_voice_icon_state()
@@ -935,95 +1188,191 @@ class VoiceoverGuiController(BaseController):
         method_cb = getattr(self.view, "method_combobox", None)
         tg_frame = getattr(self.view, "tg_settings_frame", None)
         local_frame = getattr(self.view, "local_settings_frame", None)
+        api_frame = getattr(self.view, "api_settings_frame", None)
+        playback_frame = getattr(self.view, "playback_settings_frame", None)
 
         if method_cb is not None:
-            method_cb.setEnabled(use_voice)
+            method_cb.setEnabled(True)
 
         if tg_frame is not None:
             tg_frame.setVisible(method == "TG")
         if local_frame is not None:
             local_frame.setVisible(method == "Local")
+        if api_frame is not None:
+            api_frame.setVisible(method == "API")
+        if playback_frame is not None:
+            playback_frame.setVisible(method in {"Local", "API"})
 
     # ---------- sidebar indicator ----------
+    def _publish_voice_indicator(self, event_name, payload):
+        widget = getattr(self.view, "voiceover_status", None)
+        if widget is not None:
+            widget.set_status(payload.get("state"), payload.get("tooltip"))
+        telegram = getattr(self.view, "telegram_status", None)
+        if telegram is not None and self._effective_method() == "TG":
+            if self._tg_is_connecting():
+                telegram.set_status("loading", _("Подключение…", "Connecting…"))
+            elif self._tg_connected is True:
+                telegram.set_status(
+                    "green", _("Telegram подключен", "Telegram connected")
+                )
+            else:
+                telegram.set_status(
+                    "red", _("Telegram не подключен", "Telegram not connected")
+                )
+        self.event_bus.emit(event_name, payload)
+
     def _emit_voice_icon_state(self):
         use_voice = self._effective_use_voice()
         method = self._effective_method()
 
         if not use_voice:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": None, "tooltip": None},
+            )
+            return
+
+        if method == "API":
+            from services.contracts import RemoteVoiceService
+
+            remote = services().get_optional(RemoteVoiceService)
+            from services.contracts import CharacterRegistry
+
+            registry = services().get_optional(CharacterRegistry)
+            character_id = registry.current_id() if registry else None
+            status = remote.status(character_id=character_id) if remote else None
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": (
+                        "green"
+                        if status and status.verified
+                        else "warn" if status and status.configured else "red"
+                    ),
+                    "tooltip": (
+                        "API озвучка: проверена"
+                        if status and status.verified
+                        else (
+                            "API озвучка: ожидает проверки"
+                            if status and status.configured
+                            else "API озвучка: заполните ключ и голос"
+                        )
+                    ),
+                },
+            )
             return
 
         if method == "TG":
             if self._tg_is_connecting():
-                self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                    "category": "voice",
-                    "state": "loading",
-                    "tooltip": _("Подключение к Telegram...", "Connecting to Telegram..."),
-                })
+                self._publish_voice_indicator(
+                    Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                    {
+                        "category": "voice",
+                        "state": "loading",
+                        "tooltip": _(
+                            "Подключение к Telegram...", "Connecting to Telegram..."
+                        ),
+                    },
+                )
                 return
 
             if self._tg_connected is True:
-                self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                    "category": "voice",
-                    "state": "green",
-                    "tooltip": _("Telegram подключен", "Telegram connected"),
-                })
+                self._publish_voice_indicator(
+                    Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                    {
+                        "category": "voice",
+                        "state": "green",
+                        "tooltip": _("Telegram подключен", "Telegram connected"),
+                    },
+                )
                 return
 
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "red",
-                "tooltip": _("Telegram не подключен", "Telegram not connected"),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "red",
+                    "tooltip": _("Telegram не подключен", "Telegram not connected"),
+                },
+            )
             return
 
         if method != "Local":
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": None, "tooltip": None},
+            )
             return
 
         model_id = self._current_model_id_from_settings()
         if not model_id:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "red",
-                "tooltip": _("Локальная озвучка: модель не выбрана", "Local voiceover: model not selected"),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "red",
+                    "tooltip": _(
+                        "Локальная озвучка: модель не выбрана",
+                        "Local voiceover: model not selected",
+                    ),
+                },
+            )
             return
 
         if self._loading_model_id == model_id:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "loading",
-                "tooltip": _("Инициализация модели...", "Initializing model..."),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "loading",
+                    "tooltip": _("Инициализация модели...", "Initializing model..."),
+                },
+            )
             return
 
         installed_ids = getattr(self, "_installed_models_cache", None)
         if installed_ids is None:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "loading",
-                "tooltip": _("Checking model status...", "Checking model status..."),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "loading",
+                    "tooltip": _(
+                        "Checking model status...", "Checking model status..."
+                    ),
+                },
+            )
             return
 
         if model_id not in installed_ids:
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "red",
-                "tooltip": _("Model not installed", "Model not installed"),
-            })
+            self._publish_voice_indicator(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {
+                    "category": "voice",
+                    "state": "red",
+                    "tooltip": _("Model not installed", "Model not installed"),
+                },
+            )
             return
 
         # Установлена, но не инициализирована — жёлтый "warn", а не зелёный.
         # Данные об инициализации берём из кэша, который ведёт snapshot-путь
         # (никаких блокирующих CHECK_MODEL_INITIALIZED в пути индикатора).
         initialized = model_id in getattr(self, "_initialized_models_cache", set())
-        self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-            "category": "voice",
-            "state": "green" if initialized else "warn",
-            "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
-        })
+        self._publish_voice_indicator(
+            Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+            {
+                "category": "voice",
+                "state": "green" if initialized else "warn",
+                "tooltip": (
+                    _("Модель готова", "Model ready")
+                    if initialized
+                    else _("Требуется инициализация", "Initialization required")
+                ),
+            },
+        )
 
     # ---------- local model status (chip + action button) ----------
     def _sync_local_model_status(self):
@@ -1051,36 +1400,55 @@ class VoiceoverGuiController(BaseController):
         # Идёт инициализация именно выбранной модели — прогресс виден в диалоге,
         # кнопку прячем, чтобы не давать повторно запускать загрузку.
         if model_id and self._loading_model_id == model_id:
-            self._apply_model_status(chip, btn, "loading",
-                                     _("Инициализация…", "Initializing…"), None, "")
+            self._apply_model_status(
+                chip, btn, "loading", _("Инициализация…", "Initializing…"), None, ""
+            )
             return
 
         if state.get("availability") == "checking":
-            self._apply_model_status(chip, btn, "loading", _("Проверка…", "Checking…"), None, "")
+            self._apply_model_status(
+                chip, btn, "loading", _("Проверка…", "Checking…"), None, ""
+            )
             return
 
         # Модель не выбрана или не установлена — предлагаем установить (AI Hub).
         if not model_id or not bool(state.get("installed")):
-            self._apply_model_status(chip, btn, "red",
-                                     _("Не установлена", "Not installed"),
-                                     "install", _("Установить", "Install"))
+            self._apply_model_status(
+                chip,
+                btn,
+                "red",
+                _("Не установлена", "Not installed"),
+                "install",
+                _("Установить", "Install"),
+            )
             return
 
         # Установлена и уже загружена в память — можно применить новые сохранённые
         # AI Hub настройки через явную переинициализацию.
         if self._check_initialized(model_id):
-            self._apply_model_status(chip, btn, "green",
-                                     _("Готова", "Ready"),
-                                     "reinit", _("Переинициализировать", "Reinitialize"))
+            self._apply_model_status(
+                chip,
+                btn,
+                "green",
+                _("Готова", "Ready"),
+                "reinit",
+                _("Переинициализировать", "Reinitialize"),
+            )
             return
 
         # Установлена, но не загружена — предлагаем инициализировать.
-        self._apply_model_status(chip, btn, "orange",
-                                 _("Требуется инициализация", "Initialization required"),
-                                 "init", _("Инициализировать", "Initialize"))
+        self._apply_model_status(
+            chip,
+            btn,
+            "orange",
+            _("Требуется инициализация", "Initialization required"),
+            "init",
+            _("Инициализировать", "Initialize"),
+        )
 
-    def _apply_model_status(self, chip, btn, state: str, chip_text: str,
-                            action: str | None, btn_text: str):
+    def _apply_model_status(
+        self, chip, btn, state: str, chip_text: str, action: str | None, btn_text: str
+    ):
         if chip is not None:
             chip.setText(f"● {chip_text}")
             if chip.property("state") != state:
@@ -1125,6 +1493,7 @@ class VoiceoverGuiController(BaseController):
         if not mp:
             try:
                 from presets.local_voice_models import LOCAL_VOICE_MODELS
+
                 for m in LOCAL_VOICE_MODELS:
                     mid = str(m.get("id") or "").strip()
                     name = str(m.get("name") or mid).strip()
@@ -1152,7 +1521,7 @@ class VoiceoverGuiController(BaseController):
         try:
             cb.clear()
             for name, mid in items:
-                cb.addItem(name, mid)
+                self._add_local_model_item(cb, name, mid)
         finally:
             cb.blockSignals(False)
 
@@ -1244,14 +1613,17 @@ class VoiceoverGuiController(BaseController):
             box = QMessageBox(self.view)
             box.setIcon(QMessageBox.Icon.Critical)
             box.setWindowTitle(_("Ошибка", "Error"))
-            box.setText(_(
-                "Невозможно инициализировать модель — не хватает установленной "
-                "папки с моделями (models).\n\nСкачайте голоса Мит через AI Hub.",
-                "Cannot initialize the model — the installed models folder is "
-                "missing.\n\nDownload the Mita voices via the AI Hub.",
-            ))
-            open_btn = box.addButton(_("Открыть AI Hub", "Open AI Hub"),
-                                     QMessageBox.ButtonRole.AcceptRole)
+            box.setText(
+                _(
+                    "Невозможно инициализировать модель — не хватает установленной "
+                    "папки с моделями (models).\n\nСкачайте голоса Мит через AI Hub.",
+                    "Cannot initialize the model — the installed models folder is "
+                    "missing.\n\nDownload the Mita voices via the AI Hub.",
+                )
+            )
+            open_btn = box.addButton(
+                _("Открыть AI Hub", "Open AI Hub"), QMessageBox.ButtonRole.AcceptRole
+            )
             box.addButton(_("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             if box.clickedButton() is open_btn:
@@ -1261,7 +1633,9 @@ class VoiceoverGuiController(BaseController):
                         {"window_id": "ai_hub", "payload": {"category": "voices"}},
                     )
                 except Exception as exc:
-                    logger.error(f"Failed to open AI Hub from models error: {format_exception(exc)}")
+                    logger.error(
+                        f"Failed to open AI Hub from models error: {format_exception(exc)}"
+                    )
             return False
 
         self._loading_model_id = model_id
@@ -1271,11 +1645,13 @@ class VoiceoverGuiController(BaseController):
 
         model_name = self._model_id_to_name.get(model_id, model_id)
 
-        self._loading_dialog, _progress, self._loading_status_label = create_model_loading_dialog(
-            self.view,
-            model_name,
-            lambda: self._user_cancel_loading(),
-            lambda: self._user_hide_loading(),
+        self._loading_dialog, _progress, self._loading_status_label = (
+            create_model_loading_dialog(
+                self.view,
+                model_name,
+                lambda: self._user_cancel_loading(),
+                lambda: self._user_hide_loading(),
+            )
         )
         self._loading_dialog.rejected.connect(lambda: self._user_hide_loading())
         self._loading_dialog.show()
@@ -1329,7 +1705,9 @@ class VoiceoverGuiController(BaseController):
         try:
             return dict(catalog.get_row(f"tts:{model_id}", include_status=False) or {})
         except Exception as exc:
-            logger.warning(f"Cannot evaluate compatibility for voice model '{model_id}': {format_exception(exc)}")
+            logger.warning(
+                f"Cannot evaluate compatibility for voice model '{model_id}': {format_exception(exc)}"
+            )
             return {}
 
     def _model_compatibility(self, model_id: str) -> dict[str, Any]:
@@ -1362,16 +1740,21 @@ class VoiceoverGuiController(BaseController):
         box = QMessageBox(self.view)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(_("Несовместимая модель", "Incompatible model"))
-        box.setText(_(
-            f"Модель «{model_name}» использует backend {vendors}, несовместимый с устройством {detected}.\n\n"
-            f"{warning}\n\nВсё равно попробовать запустить?",
-            f"The model \"{model_name}\" uses the {vendors} backend, which is incompatible with {detected}.\n\n"
-            f"{warning}\n\nTry to start it anyway?",
-        ))
-        yes_btn = box.addButton(_("Всё равно запустить", "Start anyway"),
-                                QMessageBox.ButtonRole.AcceptRole)
-        cancel_btn = box.addButton(_("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(cancel_btn)     # по умолчанию — безопасная отмена
+        box.setText(
+            _(
+                f"Модель «{model_name}» использует backend {vendors}, несовместимый с устройством {detected}.\n\n"
+                f"{warning}\n\nВсё равно попробовать запустить?",
+                f'The model "{model_name}" uses the {vendors} backend, which is incompatible with {detected}.\n\n'
+                f"{warning}\n\nTry to start it anyway?",
+            )
+        )
+        yes_btn = box.addButton(
+            _("Всё равно запустить", "Start anyway"), QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_btn = box.addButton(
+            _("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole
+        )
+        box.setDefaultButton(cancel_btn)  # по умолчанию — безопасная отмена
         box.exec()
         return box.clickedButton() is yes_btn
 

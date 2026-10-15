@@ -1,3 +1,5 @@
+from ui.widgets.settings_section_header import create_settings_header
+
 # File: src/ui/settings/character_settings/ui.py
 
 from PyQt6.QtCore import Qt
@@ -500,9 +502,7 @@ def build_character_settings_ui(self, parent_layout):
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(12)
-    title = tr_set(QLabel(), "Настройки персонажей", "Characters Settings")
-    title.setObjectName("CharacterSettingsTitle")
-    layout.addWidget(title)
+    create_settings_header(layout, "characters")
     splitter = CharacterWorkspaceSplitter()
     self.character_workspace_splitter = splitter
     layout.addWidget(splitter, 1)

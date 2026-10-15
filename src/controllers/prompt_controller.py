@@ -16,6 +16,7 @@ from services.contracts import (
     PromptBuildRequest,
     PromptBuildResult,
     PromptBuilderService,
+    RuntimeCapabilities,
     RuntimeFeatureService,
     SettingsService,
     SpeechService,
@@ -24,6 +25,7 @@ from services.contracts import (
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy
 from services.runtime_capabilities import runtime_capabilities
+from services.structured_response_capabilities import StructuredResponseCapabilities
 from domain.world_character_relations import get_world_character_context
 from managers.mini_game_session_registry import mini_game_sessions
 
@@ -241,8 +243,9 @@ class PromptController(PromptBuilderService):
     def _build_system_state_message(
         self,
         player_message_source: PlayerMessageSource | str | None = None,
+        runtime: RuntimeCapabilities | None = None,
     ) -> Dict[str, str]:
-        caps = runtime_capabilities()
+        caps = runtime or runtime_capabilities()
 
         return self._format_system_state_message(
             game_connected=caps.connected,
@@ -257,6 +260,7 @@ class PromptController(PromptBuilderService):
     @staticmethod
     def _build_character_environment_message(
         player_message_source: PlayerMessageSource | str | None = None,
+        runtime: RuntimeCapabilities | None = None,
     ) -> Dict[str, str] | None:
         provider = services().get_optional(CharacterEnvironmentContextService)
         if provider is None:
@@ -266,7 +270,7 @@ class PromptController(PromptBuilderService):
                 format_character_environment_context,
             )
 
-            capabilities = runtime_capabilities()
+            capabilities = runtime or runtime_capabilities()
             return {
                 "role": "system",
                 "content": format_character_environment_context(
@@ -369,6 +373,7 @@ class PromptController(PromptBuilderService):
         character,
         event_type: str,
         gm_instruction_override: str | None = None,
+        runtime: RuntimeCapabilities | None = None,
     ):
         now_str = datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M")
         character.set_variable("SYSTEM_DATETIME", now_str)
@@ -377,7 +382,7 @@ class PromptController(PromptBuilderService):
         # Состояние связи с игрой — тот же снимок, что гейтит Unity-блоки и
         # исключает unity-only поля из схемы. Промпт-шаблоны читают его через
         # DSL, чтобы не печатать каталоги эффектов, которых в этом ходу нет.
-        caps = runtime_capabilities()
+        caps = runtime or runtime_capabilities()
         character.set_variable("GAME_CONNECTED", caps.connected)
         character.set_variable(
             "UNITY_EFFECTS_AVAILABLE",
@@ -399,11 +404,13 @@ class PromptController(PromptBuilderService):
         policy: RequestPolicy | None = None,
         capabilities: Dict[str, Any] | None = None,
         gm_instruction_override: str | None = None,
+        runtime: RuntimeCapabilities | None = None,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
         self._setup_character_for_prompt(
             character,
             event_type,
             gm_instruction_override=gm_instruction_override,
+            runtime=runtime,
         )
 
         # Prompt features are ephemeral declarations of the selected template.
@@ -458,11 +465,13 @@ class PromptController(PromptBuilderService):
                 chosen_template = character.main_template_path_relative
 
         try:
-            feature_overrides = (
-                {"support_intents": False}
-                if getattr(policy, "react_level", None) == 1
-                else None
-            )
+            feature_overrides = dict(caps.get("structured_prompt_features") or {})
+            profile = caps.get("structured_response_profile") if caps.get("structured_output") else None
+            if isinstance(profile, StructuredResponseCapabilities) and not profile.sparse_enabled:
+                profile = None
+            feature_overrides["response_sparse_format"] = isinstance(profile, StructuredResponseCapabilities)
+            if getattr(policy, "react_level", None) == 1:
+                feature_overrides["support_intents"] = False
             blocks, dsl_system_infos = character.dsl_interpreter.process_main_template(
                 chosen_template,
                 feature_overrides=feature_overrides,
@@ -491,6 +500,16 @@ class PromptController(PromptBuilderService):
         # только от настроек (не от хода), поэтому живёт в кэшируемой зоне.
         if tools_prompt.strip():
             stable_blocks.append("[Available Tools]\n" + tools_prompt.strip())
+
+        if isinstance(profile, StructuredResponseCapabilities):
+            from schemas.structured_response import build_structured_response_model
+            from services.sparse_response_prompt import render_sparse_response_contract
+            profile = profile.with_prompt_intents(bool(character.dsl_interpreter.get_prompt_feature("support_intents", True)))
+            caps["structured_response_profile"] = profile
+            internal_model = build_structured_response_model(getattr(character, "custom_params", []) or [])
+            get_variable = getattr(character, "get_variable", lambda key, default: default)
+            reply_limits = {key: get_variable(key, default) for key, default in self._REPLY_DEFAULTS.items()}
+            stable_blocks.append(render_sparse_response_contract(profile, internal_model, reply_limits=reply_limits))
 
         stable_system_messages.extend(build_system_prompts(stable_blocks, separate=separate_prompts))
         volatile_system_messages.extend(build_system_prompts(volatile_blocks, separate=separate_prompts))
@@ -928,6 +947,16 @@ class PromptController(PromptBuilderService):
         extra_system_infos = request.extra_system_infos or []
         game_state = request.game_state or {}
         capabilities = request.capabilities or {}
+        profile = capabilities.get("structured_response_profile")
+        request_runtime = (
+            RuntimeCapabilities(
+                connected=profile.runtime_connected,
+                remote_only=profile.remote_only,
+                structured_segment_exclude_fields=profile.runtime_segment_exclusions,
+            )
+            if isinstance(profile, StructuredResponseCapabilities)
+            else runtime_capabilities()
+        )
         rag_context = request.rag_context or ""
         core_memory_context = request.core_memory_context or ""
         policy = request.policy
@@ -956,6 +985,31 @@ class PromptController(PromptBuilderService):
         messages: List[Dict[str, Any]] = []
         prepared = None
 
+        history_limited: List[Dict[str, Any]] = []
+        history_summary: str = ""
+        action_context: str = ""
+        last_message_at: datetime.datetime | None = None
+        if policy.use_history_in_prompt:
+            prepared = use(HistoryService).prepare_for_prompt(
+                character=character,
+                memory_limit=memory_limit,
+                is_game_master=is_game_master,
+                save_missed_history=save_missed_history,
+                image_quality=image_cfg,
+            )
+            history_limited = list(prepared.messages)
+            history_summary = prepared.summary.strip()
+            if bool(capabilities.get("action_memory", False)):
+                action_context = str(getattr(prepared, "action_context", "") or "")
+            last_message_at = prepared.last_message_at
+
+        profile = capabilities.get("structured_response_profile")
+        if isinstance(profile, StructuredResponseCapabilities):
+            profile = profile.with_context_images([*history_limited, *image_data])
+            capabilities["structured_response_profile"] = profile
+            capabilities["structured_exclude_fields"] = profile.excluded_fields
+            capabilities["structured_prompt_features"] = profile.prompt_features()
+
         stable_system_messages, volatile_system_messages, dsl_system_infos = self._build_system_messages(
             character,
             event_type,
@@ -963,6 +1017,7 @@ class PromptController(PromptBuilderService):
             policy=policy,
             capabilities=capabilities,
             gm_instruction_override=request.gm_instruction_override,
+            runtime=request_runtime,
         )
         dsl_interpreter = getattr(character, "dsl_interpreter", None)
         get_prompt_feature = getattr(dsl_interpreter, "get_prompt_feature", None)
@@ -990,7 +1045,7 @@ class PromptController(PromptBuilderService):
         # ниже): снимок game_state персистентен и липко хранит последние
         # значения даже после отключения мода, иначе десктоп-чат без игры
         # показывал бы устаревший мир в противоречии с [System State].
-        if runtime_capabilities().connected is False:
+        if request_runtime.connected is False:
             unity_static_messages: List[Dict[str, Any]] = []
             unity_dynamic_messages: List[Dict[str, Any]] = []
         else:
@@ -1011,24 +1066,6 @@ class PromptController(PromptBuilderService):
                 self._build_unity_runtime_events_message(game_state),
             ) if m]
         messages.extend(stable_system_messages)
-
-        history_limited: List[Dict[str, Any]] = []
-        history_summary: str = ""
-        action_context: str = ""
-        last_message_at: datetime.datetime | None = None
-        if policy.use_history_in_prompt:
-            prepared = use(HistoryService).prepare_for_prompt(
-                character=character,
-                memory_limit=memory_limit,
-                is_game_master=is_game_master,
-                save_missed_history=save_missed_history,
-                image_quality=image_cfg,
-            )
-            history_limited = list(prepared.messages)
-            history_summary = prepared.summary.strip()
-            if bool(capabilities.get("action_memory", False)):
-                action_context = str(getattr(prepared, "action_context", "") or "")
-            last_message_at = prepared.last_message_at
 
         for s in dsl_system_infos:
             if isinstance(s, str):
@@ -1166,11 +1203,11 @@ class PromptController(PromptBuilderService):
 
         source = parse_player_message_source(request.player_message_source)
         if source is PlayerMessageSource.NONE:
-            messages.append(self._build_system_state_message())
-            character_environment_message = self._build_character_environment_message()
+            messages.append(self._build_system_state_message(runtime=request_runtime))
+            character_environment_message = self._build_character_environment_message(runtime=request_runtime)
         else:
-            messages.append(self._build_system_state_message(source))
-            character_environment_message = self._build_character_environment_message(source)
+            messages.append(self._build_system_state_message(source, runtime=request_runtime))
+            character_environment_message = self._build_character_environment_message(source, runtime=request_runtime)
         if character_environment_message is not None:
             messages.append(character_environment_message)
         if dialogue_context_message is not None:

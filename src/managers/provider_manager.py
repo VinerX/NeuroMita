@@ -9,13 +9,14 @@ from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse
 from handlers.llm_providers.message_preprocessor import preprocess_messages_for_provider
 from handlers.llm_providers.message_transforms import apply_transforms
 from handlers.llm_providers.http_transport import LLMHttpClient
+from handlers.llm_providers.errors import LLMProviderError
 
 
 _PROVIDER_TYPES = (
-    ("handlers.llm_providers.openai_provider", "OpenAIProvider"),
+    ("handlers.llm_providers.chatgpt_plan_provider", "ChatGPTPlanProvider"),
+    ("handlers.llm_providers.responses_provider", "ResponsesProvider"),
     ("handlers.llm_providers.gemini_provider", "GeminiProvider"),
     ("handlers.llm_providers.common_provider", "CommonProvider"),
-    ("handlers.llm_providers.g4f_provider", "G4FProvider"),
 )
 
 
@@ -62,7 +63,11 @@ class ProviderManager:
 
         if req.tools_on and req.tools_mode == "native":
             if "tools_native" in caps and not bool(caps.get("tools_native")):
-                req.tools_on = False
+                raise LLMProviderError(
+                    provider=req.provider_name or "unknown",
+                    friendly_message="This endpoint does not support native tools.",
+                    code="capability.native_tools_unsupported", retryable=False, phase="request",
+                )
 
             if req.stream and ("streaming_with_tools" in caps) and not bool(caps.get("streaming_with_tools")):
                 req.stream = False
@@ -72,7 +77,15 @@ class ProviderManager:
             logger.error("Protocol-driven routing requires provider_name in request")
             raise RuntimeError("No provider can handle this request")
 
-        provider = self._find_by_name(req.provider_name)
+        provider_key = req.provider_name
+        if req.dialect_id == "openai_responses" and provider_key in {"common", "openai"}:
+            provider_key = "responses"
+        elif provider_key == "openai":
+            provider_key = "common"
+            req.dialect_id = req.dialect_id or "openai_chat_completions"
+            req.api_url = req.api_url or "https://api.openai.com/v1"
+            req.capabilities.setdefault("supports_stream_usage", True)
+        provider = self._find_by_name(provider_key)
         if not provider:
             details = "; ".join(f"{name}: {format_exception(error)}" for name, error in self._unavailable.items())
             logger.error(f"No provider registered with name '{req.provider_name}'. {details}")

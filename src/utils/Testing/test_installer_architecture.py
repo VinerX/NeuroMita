@@ -478,6 +478,32 @@ def test_environment_lock_uses_uv_compile_and_omits_shared_core(tmp_path: Path) 
     assert [os.sys.executable, "-m", "pip"] != install_cmd[:3]
 
 
+@pytest.mark.parametrize("no_deps", [False, True])
+def test_environment_lock_preserves_dependency_resolution_policy(tmp_path: Path, no_deps: bool) -> None:
+    installer = PipInstaller(target_path=tmp_path / "overlay")
+    commands: list[list[str]] = []
+
+    def run(command, _description):
+        commands.append(list(command))
+        if "compile" in command:
+            output = Path(command[command.index("--output-file") + 1])
+            output.write_text("opencv-python==4.11.0.86\n", encoding="utf-8")
+        return True
+
+    with (
+        patch.object(installer, "_resolve_installer_base_cmd", return_value=[str(tmp_path / "uv.exe"), "pip"]),
+        patch.object(installer, "_run_pip_process", side_effect=run),
+    ):
+        assert installer.install_environment_lock(
+            ["opencv-python==4.11.0.86"],
+            extra_args=["--no-deps"] if no_deps else [],
+        )
+
+    compile_command, install_command = commands
+    assert ("--no-deps" in compile_command) is no_deps
+    assert "--no-deps" in install_command
+
+
 def test_managed_uninstall_cleanup_skips_environment_package_mutations() -> None:
     package_action = InstallAction(
         type="call",

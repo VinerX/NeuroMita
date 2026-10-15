@@ -470,6 +470,8 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             self._require_install_supported(entry)
         component = self.require_component(normalized)
         run_ctx = self._component_context(entry, refresh=False)
+        if normalized_operation == "initialize" and run_ctx.get("missing_backend"):
+            raise RuntimeError(run_ctx["missing_backend"]["message"])
         trusted_execution_keys = {
             "task_id",
             "meta",
@@ -862,6 +864,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             category=category,
             item_id=item_id,
             ctx=result,
+            require_runtime=False,
         )
 
     @staticmethod
@@ -875,6 +878,13 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _inspect_component(self, entry: Any, component_ctx: dict[str, Any]) -> dict[str, Any]:
+        missing = component_ctx.get("missing_backend")
+        if missing:
+            status = self._failed_status(entry, missing["message"], code="backend_missing")
+            status["installed"] = True
+            status["message"] = missing["message"]
+            status["details"]["missing_backend"] = dict(missing)
+            return status
         component = self.require_component(entry.id)
         return dict(component.status(dict(component_ctx)).as_dict())
 

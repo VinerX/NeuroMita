@@ -10,7 +10,8 @@ import numpy as np
 from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
 from handlers.asr_audio_devices import ASR_CAPTURE_SAMPLE_RATE
 from handlers.asr_input_gate import ASRInputGate
-
+from domain.audio_input import MicrophoneSelection
+from infrastructure.audio.selection_wire import capture_selection_from_payload
 
 class ASRService:
     """
@@ -62,7 +63,7 @@ class ASRService:
 
         if m == "start_live":
             engine_id = str(payload.get("engine_id") or "google").strip()
-            mic_index = int(payload.get("microphone_index", 0) or 0)
+            selection = capture_selection_from_payload(payload)
             engine_settings = payload.get("engine_settings") if isinstance(payload.get("engine_settings"), dict) else {}
 
             vad_cfg = payload.get("vad") if isinstance(payload.get("vad"), dict) else {}
@@ -89,7 +90,7 @@ class ASRService:
             try:
                 ok = await self._start_live_internal(
                     engine_id=engine_id,
-                    mic_index=mic_index,
+                    selection=selection,
                     engine_settings=engine_settings,
                     sample_rate=sample_rate,
                     chunk_size=chunk_size,
@@ -109,8 +110,8 @@ class ASRService:
             return bool(ok)
 
         if m == "switch_input":
-            mic_index = int(payload.get("microphone_index", 0) or 0)
-            return bool(await self._switch_input_internal(mic_index))
+            selection = capture_selection_from_payload(payload)
+            return bool(await self._switch_input_internal(selection))
 
         if m == "stop_live":
             await self._stop_live_internal(reason="requested")
@@ -122,7 +123,7 @@ class ASRService:
         self,
         *,
         engine_id: str,
-        mic_index: int,
+        selection: MicrophoneSelection,
         engine_settings: dict,
         sample_rate: int,
         chunk_size: int,
@@ -225,7 +226,7 @@ class ASRService:
                 await asyncio.to_thread(
                     lambda: asyncio.run(
                         capture.run(
-                            microphone_index=mic_index,
+                            selection=selection,
                             config=AudioCaptureConfig(
                                 sample_rate=sample_rate,
                                 chunk_size=chunk_size,
@@ -313,7 +314,7 @@ class ASRService:
         self.emit_event("status", {"running": True})
         return True
 
-    async def _switch_input_internal(self, microphone_index: int) -> bool:
+    async def _switch_input_internal(self, selection: MicrophoneSelection) -> bool:
         """Reopen only the microphone stream, retaining ASR and VAD models."""
 
         config = dict(self._live_config or {})
@@ -322,7 +323,7 @@ class ASRService:
 
         await self._stop_capture_internal(reason="switch_input", emit_status=False)
         return await self._start_live_internal(
-            mic_index=int(microphone_index),
+            selection=selection,
             reuse_loaded_models=True,
             **config,
         )

@@ -32,6 +32,17 @@ from core.backends import (
 from core.install_requirements import is_pip_spec_satisfied
 
 
+class MissingBackendLayer(RuntimeError):
+    """An installed overlay has no compatible installed backend family."""
+
+    def __init__(self, family: str, capabilities: Iterable[str]):
+        self.family = family
+        self.capabilities = tuple(sorted(capabilities))
+        super().__init__(
+            f"No installed backend layer satisfies family '{family}': {list(self.capabilities)}"
+        )
+
+
 _LAYOUT_VERSION = 2
 _AI_ENVIRONMENT_CATEGORIES = frozenset({"backend", "tts", "voice", "asr", "rag", "embedding", "beats"})
 _MAIN_ENVIRONMENT_CATEGORIES = frozenset({"dependency"})
@@ -1764,10 +1775,7 @@ class RuntimeEnvironmentManager:
                 if self._layer_satisfies(layer, required)
             ]
             if not candidates:
-                raise RuntimeError(
-                    f"No installed backend layer satisfies family '{family}': "
-                    f"{sorted(required)}"
-                )
+                raise MissingBackendLayer(family, required)
             selected_layers.append(self._select_family_layer(family, candidates))
 
         self._warn_distribution_conflicts(selected_records, selected_layers)
@@ -2052,13 +2060,24 @@ class RuntimeEnvironmentManager:
         category: str,
         item_id: str,
         ctx: dict[str, Any] | None = None,
+        require_runtime: bool = True,
     ) -> dict[str, Any]:
         result = dict(ctx or {})
         normalized_category = str(category or "").strip().lower()
         normalized_item = str(item_id or "").strip()
         record = self.active_for(category=normalized_category, item_id=normalized_item)
         if record is not None:
-            paths = self.runtime_paths(record)
+            try:
+                paths = self.runtime_paths(record)
+            except MissingBackendLayer as exc:
+                if require_runtime:
+                    raise
+                paths = (str(record.site_packages),)
+                result["missing_backend"] = {
+                    "family": exc.family,
+                    "capabilities": list(exc.capabilities),
+                    "message": str(exc),
+                }
             result.update(
                 {
                     "target_dir": str(record.site_packages),

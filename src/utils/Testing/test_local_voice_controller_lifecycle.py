@@ -58,6 +58,25 @@ class _EventBusStub:
 
 
 class LocalVoiceControllerReinitializeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_initialization_dialog_preserves_activation_diagnostics(self):
+        controller = LocalVoiceController.__new__(LocalVoiceController)
+        controller.event_bus = _EventBusStub()
+        controller._initialized_cache = {}
+
+        def activate(*_args, **kwargs):
+            diagnostics = kwargs.get("diagnostics")
+            if diagnostics is not None:
+                diagnostics.append("RuntimeError: CUDA driver is insufficient")
+            return False
+
+        controller._get_engine = lambda: SimpleNamespace(activate_environment=activate)
+        await controller._async_init_model("edge_tts_rvc_cuda")
+        messages = [data["message"] for name, data in controller.event_bus.emitted if name == Events.GUI.SHOW_ERROR_MESSAGE]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("CUDA driver is insufficient", messages[0])
+        self.assertFalse(controller._initialized_cache["edge_tts_rvc_cuda"])
+        self.assertFalse(any(name == Events.Audio.FINISH_MODEL_LOADING for name, _ in controller.event_bus.emitted))
+
     async def test_reinitialize_restarts_tts_before_model_init(self):
         controller = LocalVoiceController.__new__(LocalVoiceController)
         controller.event_bus = _EventBusStub()

@@ -56,12 +56,13 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
         return self._snapshot(include_size=True)
 
     def _snapshot(self, *, include_size: bool) -> dict[str, Any]:
+        root = self._environments.environment_root
+        size = self._directory_size(root) if include_size else None
         with self._state_lock:
             state = self._state
             message = self._message
             error = self._error
             revision = self._revision
-        root = self._environments.environment_root
         return {
             "state": state.value,
             "busy": state not in {
@@ -74,7 +75,7 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
             "revision": revision,
             "path": str(root),
             "exists": root.exists(),
-            "size_bytes": self._directory_size(root) if include_size else None,
+            "size_bytes": size,
         }
 
     @staticmethod
@@ -106,7 +107,7 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
                 )
             self._state = state
             self._message = str(message)
-            self._error = format_exception(error)
+            self._error = format_exception(error) if error else ""
             self._revision += 1
         if progress is not None:
             progress(self._snapshot(include_size=False))
@@ -122,7 +123,6 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
         queue: InstallQueueAdministrationService | None = None
         engine: AIEngineAdministrationService | None = None
         queue_paused = False
-        engine_suspended = False
         try:
             self._transition(MaintenanceState.VALIDATING, "Проверка пути AI-окружений", progress)
             engine = services().get_optional(AIEngineAdministrationService)
@@ -130,9 +130,7 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
                 raise RuntimeError("AI engine administration service is unavailable")
 
             self._transition(
-                MaintenanceState.DRAINING_INSTALLS,
-                "Остановка очереди установок",
-                progress,
+                MaintenanceState.DRAINING_INSTALLS, "Остановка очереди установок", progress,
             )
             queue = services().get_optional(InstallQueueAdministrationService)
             if queue is not None:
@@ -141,75 +139,42 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
                     raise TimeoutError("Install queue did not stop within 30 seconds")
 
             self._transition(
-                MaintenanceState.STOPPING_WORKERS,
-                "Остановка AI workers",
-                progress,
+                MaintenanceState.STOPPING_WORKERS, "Принудительная остановка AI-процессов", progress,
             )
-            engine_suspended = engine.suspend_for_maintenance(timeout=15.0)
-            if not engine_suspended:
-                raise RuntimeError("AI workers could not be suspended")
+            with engine.maintenance_session(timeout=15.0):
+                self._transition(
+                    MaintenanceState.DELETING, "Удаление управляемых AI-пакетов", progress,
+                )
+                self._environments.reset_managed_storage()
+                self._transition(
+                    MaintenanceState.RECONCILING, "Обновление каталога установленных компонентов", progress,
+                )
+                catalog = services().get_optional(InstallableCatalogService)
+                if catalog is not None:
+                    catalog.invalidate()
+                self._transition(
+                    MaintenanceState.RESTARTING, "Перезапуск AI-процессов", progress,
+                )
 
-            self._transition(
-                MaintenanceState.DELETING,
-                "Удаление управляемых AI-пакетов",
-                progress,
-            )
-            self._environments.reset_managed_storage()
-
-            self._transition(
-                MaintenanceState.RECONCILING,
-                "Сброс единого каталога установленных компонентов",
-                progress,
-            )
-            catalog = services().get_optional(InstallableCatalogService)
-            if catalog is not None:
-                catalog.invalidate()
-
-            self._transition(
-                MaintenanceState.RESTARTING,
-                "Перезапуск AI workers",
-                progress,
-            )
-            if not engine.resume_after_maintenance():
-                raise RuntimeError("AI workers could not be restarted")
-            engine_suspended = False
             if queue is not None:
                 queue.resume()
                 queue_paused = False
             get_event_bus().emit(
-                Events.Install.CATALOG_CHANGED,
-                {"reason": "environment_reset"},
+                Events.Install.CATALOG_CHANGED, {"reason": "environment_reset"},
             )
-
             self._transition(
-                MaintenanceState.COMPLETED,
-                "AI-окружения удалены. Workers перезапущены.",
-                progress,
+                MaintenanceState.COMPLETED, "AI-окружения удалены. Процессы перезапущены.", progress,
             )
         except Exception as exc:
-            if engine_suspended and engine is not None:
-                try:
-                    engine.resume_after_maintenance()
-                except Exception:
-                    pass
             if queue_paused and queue is not None:
                 try:
                     queue.resume()
                 except Exception:
                     pass
-            try:
-                self._transition(
-                    MaintenanceState.FAILED,
-                    "Удаление AI-окружений не завершено",
-                    progress,
-                    error=format_exception(exc),
-                )
-            except RuntimeError:
-                with self._state_lock:
-                    self._state = MaintenanceState.FAILED
-                    self._message = "Удаление AI-окружений не завершено"
-                    self._error = format_exception(exc)
-                    self._revision += 1
+            self._transition(
+                MaintenanceState.FAILED, "Удаление AI-окружений не завершено", progress,
+                error=format_exception(exc),
+            )
         finally:
             self._operation_lock.release()
         return self.snapshot()

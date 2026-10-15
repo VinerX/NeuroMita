@@ -4,7 +4,7 @@ from pathlib import Path
 import threading
 from types import SimpleNamespace
 
-from controllers.ai_engine_controller import AIEngineController
+from controllers.ai_engine_controller import AIEngineController, _RuntimeSwitchGate
 from core.runtime_environments import RuntimeEnvironmentManager
 from services.ai_environment_maintenance_service import (
     DefaultAIEnvironmentMaintenanceService,
@@ -160,6 +160,8 @@ def test_cuda_device_association_falls_back_to_unique_name_without_luid() -> Non
 def test_shared_service_restart_accepts_supervisor_replacement_after_worker_death() -> None:
     controller = AIEngineController.__new__(AIEngineController)
     controller._lock = threading.RLock()
+    controller._runtime_switch_lock = threading.RLock()
+    controller._runtime_switching = _RuntimeSwitchGate()
     controller._shutting_down = threading.Event()
     controller.mode = "shared"
     controller._service_to_worker = {"tts": "shared"}
@@ -183,6 +185,8 @@ def test_shared_service_restart_accepts_supervisor_replacement_after_worker_deat
 def test_shared_service_restart_does_not_cold_restart_live_worker_on_regular_failure() -> None:
     controller = AIEngineController.__new__(AIEngineController)
     controller._lock = threading.RLock()
+    controller._runtime_switch_lock = threading.RLock()
+    controller._runtime_switching = _RuntimeSwitchGate()
     controller._shutting_down = threading.Event()
     controller.mode = "shared"
     controller._service_to_worker = {"tts": "shared"}

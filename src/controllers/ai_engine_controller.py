@@ -4,9 +4,11 @@ from core.runtime_ipc import ipc_allowed
 
 import multiprocessing as mp
 import os
+import subprocess
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from queue import Full
 from concurrent.futures import CancelledError, Future, InvalidStateError
@@ -694,7 +696,7 @@ class _Worker:
         # Под тем же замком, что и допуск: после выхода отсюда ни один новый
         # запрос в pending уже не попадёт.
         with self.admission_lock:
-            if self.stopping.is_set():
+            if self.stopping.is_set() and (self.proc is None or not self.proc.is_alive()):
                 return
             self.stopping.set()
         expected_exit = getattr(self, "expected_exit", None)
@@ -717,7 +719,18 @@ class _Worker:
 
         try:
             if self.proc is not None and self.proc.is_alive():
-                self.proc.terminate()
+                pid = getattr(self.proc, "pid", None)
+                if os.name == "nt" and pid and float(timeout or 0.0) <= 0:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            capture_output=True, timeout=5.0,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        logger.exception("Failed to terminate AI worker process tree '%s'", self.worker_name)
+                if self.proc.is_alive():
+                    self.proc.terminate()
         except Exception:
             pass
 
@@ -731,6 +744,9 @@ class _Worker:
                         self.proc.join(timeout=1.0)
         except Exception:
             pass
+
+        if self.proc is not None and self.proc.is_alive():
+            raise RuntimeError(f"AI worker '{self.worker_name}' is still alive after terminate/kill")
 
         for queue_obj in (self.res_q, self.log_q):
             try:
@@ -1088,12 +1104,15 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         *,
         ready_timeout: float,
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
+        diagnostics: list[str] | None = None,
     ) -> _WorkerRuntimeValidationResult:
         if not self._wait_all_ready(worker, ready_timeout):
             detail = worker.last_error or getattr(worker, "last_status", "") or (
                 f"exitcode={getattr(worker.proc, 'exitcode', None)}"
             )
             logger.error(f"Candidate AI runtime did not become ready: {detail}")
+            if diagnostics is not None:
+                diagnostics.append(f"Candidate AI runtime did not become ready: {detail}")
             return _WorkerRuntimeValidationResult(process_ready=False)
 
         failed_services: set[str] = set()
@@ -1119,6 +1138,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     f"{service_name}.{method}: {detail}"
                 )
                 logger.error(message)
+                if diagnostics is not None:
+                    diagnostics.append(message)
                 failed_services.add(service_name)
                 proc = worker.proc
                 if proc is None or not proc.is_alive():
@@ -1140,7 +1161,12 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
         reuse_validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
         promote: bool = True,
+        diagnostics: list[str] | None = None,
     ) -> bool:
+        if self._runtime_switching.is_active():
+            if diagnostics is not None:
+                diagnostics.append(self._runtime_switching.reason())
+            return False
         target_paths = tuple(composition.paths)
         target_probes = tuple(getattr(composition, "probe_modules", ()) or ())
         operation_timeout = max(1.0, float(timeout or 0.0))
@@ -1182,6 +1208,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 return True
             except Exception as exc:
                 logger.error(f"Failed to promote shared AI runtime contract: {format_exception(exc)}")
+                if diagnostics is not None:
+                    diagnostics.append(f"Failed to promote shared AI runtime contract: {format_exception(exc)}")
                 return False
 
         def restore_registry(snapshot) -> None:
@@ -1230,6 +1258,10 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     )
 
         with self._runtime_switch_lock:
+            if self._runtime_switching.is_active():
+                if diagnostics is not None:
+                    diagnostics.append(self._runtime_switching.reason())
+                return False
             if self.mode == "shared":
                 with self._lock:
                     current = self._workers.get(_SHARED_WORKER)
@@ -1245,6 +1277,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         current,
                         ready_timeout=bootstrap_timeout,
                         validations=reuse_validations,
+                        diagnostics=diagnostics,
                     ):
                         return False
                     return promote_registry(cleanup=True)
@@ -1337,6 +1370,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         candidate,
                         ready_timeout=bootstrap_timeout,
                         validations=validations,
+                        diagnostics=diagnostics,
                     ):
                         candidate.stop(timeout=1.0)
                         candidate = None
@@ -1405,6 +1439,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         logger.error(
                             f"Candidate AI worker '{service_name}' did not become ready: {detail}"
                         )
+                        if diagnostics is not None:
+                            diagnostics.append(f"Candidate AI worker '{service_name}' did not become ready: {detail}")
                         candidate.stop(timeout=1.0)
                         return False
                     candidates[service_name] = candidate
@@ -1416,6 +1452,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         candidate,
                         ready_timeout=bootstrap_timeout,
                         validations=(validation,),
+                        diagnostics=diagnostics,
                     ):
                         return False
 
@@ -1460,18 +1497,19 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         timeout: float = 20.0,
         preferred_core_layer_ids: Sequence[str] = (),
     ) -> bool:
-        try:
-            composition = self._environments.runtime_composition(
-                preferred_core_layer_ids=preferred_core_layer_ids,
+        with self._runtime_switch_lock:
+            try:
+                composition = self._environments.runtime_composition(
+                    preferred_core_layer_ids=preferred_core_layer_ids,
+                )
+            except Exception as exc:
+                logger.error(f"AI runtime composition rejected: {format_exception(exc)}")
+                return False
+            return self._switch_to_composition(
+                composition,
+                timeout=timeout,
+                validations=self._validation_sequence(),
             )
-        except Exception as exc:
-            logger.error(f"AI runtime composition rejected: {format_exception(exc)}")
-            return False
-        return self._switch_to_composition(
-            composition,
-            timeout=timeout,
-            validations=self._validation_sequence(),
-        )
 
     def _on_worker_crash(self, worker: _Worker, exit_code: int | None) -> None:
         if self._shutting_down.is_set():
@@ -1498,7 +1536,9 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             ),
         )
 
-        with self._recovery_lock:
+        with self._runtime_switch_lock, self._recovery_lock:
+            if self._runtime_switching.is_active():
+                return
             with self._lock:
                 worker_key = next(
                     (key for key, value in self._workers.items() if value is crashed),
@@ -1935,78 +1975,75 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         description="Restart one AI service: tts, asr, rag, or beats.",
     )
     def restart_service(self, service: str, timeout: float = 5.0) -> bool:
-        s = str(service or "").strip().lower()
-        with self._lock:
-            w = self._worker_for_service(s)
-            mode = self.mode
-        if not w:
-            return False
-
-        if mode == "shared":
-            if w.restart_service(s, timeout=timeout):
-                return True
-            proc = getattr(w, "proc", None)
-            if proc is not None and not proc.is_alive():
-                # A fatal CUDA error may terminate the worker while processing the
-                # restart. The crash supervisor owns process recovery; wait for its
-                # replacement instead of racing it with another worker spawn.
-                return self._wait_for_worker_replacement(s, w, timeout=max(20.0, float(timeout or 0.0)))
-            return False
-
-        nw = _Worker(
-            self._ctx,
-            s,
-            (s,),
-            python_paths=w.python_paths,
-            probe_modules=w.probe_modules,
-        )
-        nw.start()
-        if not nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0))):
-            nw.stop(timeout=1.0)
-            return False
-        nw.on_crash = self._on_worker_crash
-        with self._lock:
-            # Another recovery/switch may have replaced this worker while the
-            # candidate was booting. Do not overwrite a newer owner.
-            if self._worker_for_service(s) is not w:
-                nw.stop(timeout=1.0)
+        with self._runtime_switch_lock:
+            if self._runtime_switching.is_active():
                 return False
-            self._workers[s] = nw
-            self._service_to_worker[s] = s
-        w.stop(timeout=timeout)
-        return True
+            s = str(service or "").strip().lower()
+            with self._lock:
+                w = self._worker_for_service(s)
+                mode = self.mode
+            if not w:
+                return False
+            if mode == "shared":
+                if w.restart_service(s, timeout=timeout):
+                    return True
+                proc = getattr(w, "proc", None)
+                if proc is None or proc.is_alive():
+                    return False
+            else:
+                nw = _Worker(
+                    self._ctx, s, (s,), python_paths=w.python_paths,
+                    probe_modules=w.probe_modules,
+                )
+                nw.start()
+                if not nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0))):
+                    nw.stop(timeout=1.0)
+                    return False
+                nw.on_crash = self._on_worker_crash
+                with self._lock:
+                    if self._worker_for_service(s) is not w:
+                        nw.stop(timeout=1.0)
+                        return False
+                    self._workers[s] = nw
+                    self._service_to_worker[s] = s
+                w.stop(timeout=timeout)
+                return True
+        return self._wait_for_worker_replacement(s, w, timeout=max(20.0, float(timeout or 0.0)))
 
     def restart_worker_for_service(self, service: str, timeout: float = 8.0) -> bool:
-        s = str(service or "").strip().lower()
-        with self._lock:
-            worker_name = self._service_to_worker.get(s)
-            w = self._worker_for_service(s)
-            if not worker_name or not w:
+        with self._runtime_switch_lock:
+            if self._runtime_switching.is_active():
                 return False
+            s = str(service or "").strip().lower()
+            with self._lock:
+                worker_name = self._service_to_worker.get(s)
+                w = self._worker_for_service(s)
+                if not worker_name or not w:
+                    return False
 
-            service_names = tuple(w.service_names)
-            if not service_names:
-                service_names = (s,)
+                service_names = tuple(w.service_names)
+                if not service_names:
+                    service_names = (s,)
 
-            nw = _Worker(
-                self._ctx,
-                worker_name,
-                service_names,
-                python_paths=w.python_paths,
-                probe_modules=w.probe_modules,
-            )
-            nw.start()
+                nw = _Worker(
+                    self._ctx,
+                    worker_name,
+                    service_names,
+                    python_paths=w.python_paths,
+                    probe_modules=w.probe_modules,
+                )
+                nw.start()
 
-            ready_timeout = max(1.0, float(timeout or 0.0))
-            if not self._wait_all_ready(nw, ready_timeout):
-                nw.stop(timeout=1.0)
-                return False
-            nw.on_crash = self._on_worker_crash
-            self._workers[worker_name] = nw
-            for service_name in service_names:
-                self._service_to_worker[service_name] = worker_name
-            w.stop(timeout=timeout)
-            return True
+                ready_timeout = max(1.0, float(timeout or 0.0))
+                if not self._wait_all_ready(nw, ready_timeout):
+                    nw.stop(timeout=1.0)
+                    return False
+                nw.on_crash = self._on_worker_crash
+                self._workers[worker_name] = nw
+                for service_name in service_names:
+                    self._service_to_worker[service_name] = worker_name
+                w.stop(timeout=timeout)
+                return True
 
     @staticmethod
     def _environment_category_for_service(service: str) -> str:
@@ -2110,11 +2147,14 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         validation_payload: dict[str, Any] | None = None,
         validation_timeout: float | None = None,
         runtime_slot: str | None = None,
+        diagnostics: list[str] | None = None,
     ) -> bool:
         service_name = str(service or "").strip().lower()
         model_id = str(item_id or "").strip()
         slot = self._runtime_slot_for(service_name, model_id, runtime_slot)
         if not service_name or not model_id:
+            if diagnostics is not None:
+                diagnostics.append("Service and model ID are required for runtime activation")
             return False
 
         record = self._environments.active_for(
@@ -2125,6 +2165,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             logger.error(
                 f"Managed environment is not installed for service={service_name} item={model_id}"
             )
+            if diagnostics is not None:
+                diagnostics.append(f"Managed environment is not installed for service={service_name} item={model_id}")
             return False
 
         # Слоты активируются параллельно (эмбеддинги и реранкер греются в фоне
@@ -2132,6 +2174,14 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         # общего замка вторая активация собрала бы композицию по устаревшему
         # снимку и выкинула слот соседа.
         with self._runtime_switch_lock:
+            record = self._environments.active_for(
+                category=category or self._environment_category_for_service(service_name),
+                item_id=model_id,
+            )
+            if record is None:
+                if diagnostics is not None:
+                    diagnostics.append(f"Managed environment is no longer installed for service={service_name} item={model_id}")
+                return False
             selection = self._environments.selection_with(slot, record)
             try:
                 composition = self._environments.runtime_composition(
@@ -2142,6 +2192,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     f"Cannot compose shared runtime for service={service_name} "
                     f"item={model_id}: {format_exception(exc)}"
                 )
+                if diagnostics is not None:
+                    diagnostics.append(f"Cannot compose runtime for {service_name}/{model_id}: {format_exception(exc)}")
                 return False
 
             candidate_validations = dict(self._runtime_validations)
@@ -2170,6 +2222,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 selection=selection,
                 validations=self._validation_sequence(candidate_validations),
                 reuse_validations=requested_validation,
+                diagnostics=diagnostics,
             ):
                 return False
             self._runtime_validations = candidate_validations
@@ -2182,6 +2235,11 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             logger.info(
                 f"Activated shared runtime for service={service_name} item={model_id}: "
                 f"{record.logical_id}@{record.revision_id}"
+            )
+        elif diagnostics is not None:
+            diagnostics.append(
+                str(getattr(worker, "last_error", "") or getattr(worker, "last_status", ""))
+                or f"AI worker did not become ready for service={service_name} item={model_id}"
             )
         return ready
 
@@ -2283,15 +2341,36 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
     def _stop_runtime_workers(self, *, timeout: float) -> None:
         with self._lock:
             workers = list(self._workers.values())
-            self._workers = {}
-            self._service_to_worker = {}
         for worker in workers:
             worker.expected_exit.set()
+        failures = []
         for worker in workers:
             try:
                 worker.stop(timeout=timeout)
-            except Exception:
+                proc = getattr(worker, "proc", None)
+                if proc is not None and proc.is_alive():
+                    raise RuntimeError(f"AI worker '{worker.worker_name}' is still alive")
+            except Exception as exc:
+                failures.append(format_exception(exc))
                 logger.exception(f"Failed to stop AI worker '{worker.worker_name}'")
+            else:
+                with self._lock:
+                    self._workers = {
+                        name: owner for name, owner in self._workers.items() if owner is not worker
+                    }
+                    self._service_to_worker = {
+                        service: name for service, name in self._service_to_worker.items()
+                        if name in self._workers
+                    }
+        if failures:
+            raise RuntimeError("AI workers did not stop: " + "; ".join(failures))
+
+    @contextmanager
+    def maintenance_session(self, *, timeout: float = 15.0):
+        """Serialize runtime changes for the entire stop/delete/restart transaction."""
+        with self._runtime_switch_lock:
+            with super().maintenance_session(timeout=timeout):
+                yield
 
     def suspend_for_maintenance(self, *, timeout: float = 15.0) -> bool:
         if self._shutting_down.is_set():
@@ -2299,7 +2378,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         with self._runtime_switch_lock:
             # Обслуживание не имеет срока: вызовы должны падать сразу, а не ждать.
             self._begin_switch(waitable=False)
-            self._stop_runtime_workers(timeout=timeout)
+            self._stop_runtime_workers(timeout=0.0)
             return True
 
     def resume_after_maintenance(self) -> bool:
@@ -2310,6 +2389,11 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 with self._lock:
                     already_running = bool(self._workers)
                 if not already_running:
+                    selection = self._environments.runtime_selection()
+                    self._runtime_validations = {
+                        slot: validation for slot, validation in self._runtime_validations.items()
+                        if slot in selection
+                    }
                     self._init_workers()
             finally:
                 # Окно закрываем всегда: незакрытое навсегда убивает движок —

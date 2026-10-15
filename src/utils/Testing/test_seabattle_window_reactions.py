@@ -141,6 +141,38 @@ class SeaBattleWindowReactionTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_last_ship_emits_only_game_over_with_correct_winner(self) -> None:
+        for player_wins in (True, False):
+            for enabled in (True, False):
+                with self.subTest(player_wins=player_wins, enabled=enabled):
+                    commands, states, reactions = queue.Queue(), queue.Queue(), queue.Queue()
+                    window = SeaBattleWindow(commands, states, reactions)
+                    try:
+                        engine = window.game.engine
+                        for owner in (engine.player_id, engine.mita_id):
+                            self.assertTrue(engine.place_ship(owner, 0, 0, 1, "h")[0])
+                        engine.game_phase = "battle"
+                        engine.current_player = engine.player_id if player_wins else engine.mita_id
+                        window.mita_reaction_checkbox.setChecked(enabled)
+                        with patch("localization._current_language", return_value="EN"):
+                            if player_wins:
+                                window.on_opponent_board_click(0, 0, Qt.MouseButton.LeftButton)
+                            else:
+                                commands.put({"action": "mita_move", "coord": "A1"})
+                                window.process_commands()
+                        self.assertEqual(window.info_label.text(), "You won!" if player_wins else "Mita won.")
+                        snapshots = []
+                        while not states.empty():
+                            snapshots.append(states.get_nowait())
+                        self.assertEqual(snapshots[-1]["phase"], "game_over")
+                        if enabled:
+                            event = reactions.get_nowait()
+                            self.assertEqual(event["event"], "player_game_over")
+                            self.assertEqual(event["winner"], engine.current_player)
+                        self.assertTrue(reactions.empty())
+                    finally:
+                        window.close()
+
     def test_mita_hit_emits_follow_up_reaction_after_state_update(self) -> None:
         command_queue = queue.Queue()
         state_queue = queue.Queue()

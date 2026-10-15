@@ -676,19 +676,26 @@ class ChatController(ChatService, GenerationActivityService):
                             continue
                 image_data = prepared if prepared else None
 
-            if system_input and eff_policy.echo_to_ui and image_source != "mita_camera":
+            from core.tv_observation import normalize_tv_observation, tv_observation_part, format_tv_observation
+            tv_observation = normalize_tv_observation((game_state or {}).get("tv_observation"))
+            displayed_system_input = system_input
+            if tv_observation:
+                displayed_system_input = (system_input or "").replace(format_tv_observation(tv_observation), "").strip()
+                if effective_event_type == "react":
+                    displayed_system_input = ""
+            if displayed_system_input and eff_policy.echo_to_ui and image_source != "mita_camera":
                 system_message_id = ConversationMessageIds.system()
                 ch = self._get_character_ref(character_id)
                 if ch and hasattr(ch, "history_manager"):
                     ch.history_manager.append_message({
                         "role": "system",
-                        "content": system_input,
+                        "content": displayed_system_input,
                         "message_id": system_message_id,
                         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "system",
-                    "response": system_input,
+                    "response": displayed_system_input,
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
@@ -696,7 +703,7 @@ class ChatController(ChatService, GenerationActivityService):
                     "surface_character_ids": surface_character_ids,
                 }, delivery=EventDelivery.ORDERED)
 
-            if image_data and eff_policy.echo_to_ui and not images_shown:
+            if (image_data or tv_observation) and eff_policy.echo_to_ui and not images_shown:
                 img_display_role = "assistant" if image_source == "mita_camera" else "user"
                 img_content = [
                     {
@@ -704,11 +711,11 @@ class ChatController(ChatService, GenerationActivityService):
                         "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"},
                         "display_role": img_display_role,
                     }
-                    for img in image_data
+                    for img in (image_data or [])
                 ]
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": img_display_role,
-                    "response": img_content,
+                    "response": ([tv_observation_part(tv_observation)] if tv_observation else []) + img_content,
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
@@ -1303,8 +1310,16 @@ class ChatController(ChatService, GenerationActivityService):
             logger.warning(f"[ChatController] DELETE_MESSAGE: персонаж '{character_id}' не найден")
             return
         deleted = character.history_manager.delete_message(message_id)
-        if deleted:
-            self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+        retry_deleted = UnityRetryStore.remove(character_id, message_id)
+        requests = getattr(self, "_ui_requests_by_message_id", {})
+        request = requests.get(message_id)
+        local_deleted = bool(request and str(request.get("character_id") or character_id) == character_id)
+        if deleted or retry_deleted or local_deleted:
+            requests.pop(message_id, None)
+            self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY, {
+                "deleted_message_id": message_id,
+                "character_id": character_id,
+            })
             logger.info(f"[ChatController] Удалено сообщение {message_id}")
         else:
             logger.warning(f"[ChatController] Сообщение {message_id} не найдено")

@@ -585,6 +585,7 @@ class Events:
         VOICEOVER_UI_READY = "voiceover_ui_ready"
         VOICEOVER_REFRESH = "voiceover_refresh"
         VOICEOVER_MODEL_SELECTED = "voiceover_model_selected"
+        VOICEOVER_MODEL_INITIALIZE = "voiceover_model_initialize"
         VOICEOVER_MODEL_REINITIALIZE = "voiceover_model_reinitialize"
 
     class Model:
@@ -592,7 +593,6 @@ class Events:
         LOAD_HISTORY = "load_history"
         GET_CHAT_HISTORY = "get_chat_history"
         LOAD_MORE_HISTORY = "load_more_history"
-        SCHEDULE_G4F_UPDATE = "schedule_g4f_update"
         GET_CURRENT_CONTEXT_TOKENS = "get_current_context_tokens"
         GET_TOKEN_STATS = "get_token_stats"
         CALCULATE_COST = "calculate_cost"
@@ -688,6 +688,7 @@ class Events:
         SPEECH_TEXT_RECOGNIZED = "speech_text_recognized"
         GET_MICROPHONE_LIST = "get_microphone_list"
         REFRESH_MICROPHONE_LIST = "refresh_microphone_list"
+        MICROPHONE_TEST_CHANGED = "microphone_test_changed"
         SET_GIGAAM_OPTIONS = "set_gigaam_options"
         RESTART_SPEECH_RECOGNITION = "restart_speech_recognition"
         REFRESH_ASR_STATUS = "refresh_asr_status"
@@ -703,7 +704,7 @@ class Events:
         ASR_MODEL_INSTALL_FAILED = "asr_model_install_failed"
         ASR_MODEL_INITIALIZED = "asr_model_initialized"
         ASR_FAILED = "asr_failed"
-        
+
         GET_RECOGNIZER_SETTINGS_SCHEMA = "get_asr_settings_schema"
         GET_RECOGNIZER_SETTINGS = "get_asr_settings"
         SET_RECOGNIZER_OPTION = "set_recognizer_option"
@@ -711,7 +712,6 @@ class Events:
         ASR_MODEL_INIT_STARTED = "asr_model_init_started"
         GET_ASR_MODELS_GLOSSARY = "get_asr_models_glossary"
         GET_ASR_ENGINES_LIST = "get_asr_engines_list"
-        
 
     class Capture:
         """События для захвата экрана и камеры"""

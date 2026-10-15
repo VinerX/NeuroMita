@@ -43,6 +43,7 @@ from services.update_transaction import (
     verify_install_manifest,
     write_install_manifest,
 )
+from services.unity_process_guard import describe_directory_users, stop_unity_for_update
 from services.update_activation import (
     active_zipapp_matches,
     discard_activation_artifacts,
@@ -1882,6 +1883,9 @@ def _emit_stage(
 
 
 def _copy_preserved_unity_data(source: Path, stage: Path) -> None:
+    gallery = source / "Gallery"
+    if gallery.is_dir():
+        shutil.copytree(gallery, stage / "Gallery", dirs_exist_ok=True)
     user_data = source / "user_data"
     if not user_data.is_dir():
         return
@@ -1900,6 +1904,7 @@ def _unity_transaction(base_path: Path, unity_path: Path, log) -> DirectoryInsta
         target=safe_target,
         state_root=base_path / "_update_state",
         logger=log,
+        lock_diagnostics=describe_directory_users,
     )
     if transaction.paths.backup.exists() or transaction.paths.backup.is_symlink():
         validate_unity_update_target(base_path, transaction.paths.backup)
@@ -1960,7 +1965,17 @@ def _install_unity_asset(
 
     try:
         initial_phase = transaction.phase
+
+        def close_unity() -> None:
+            def check_cancel() -> None:
+                if stop_event is not None and stop_event.is_set():
+                    raise UpdateCancelled("Installation cancelled")
+
+            _emit_stage(on_stage, "Closing Unity", 3, 6, True)
+            stop_unity_for_update(unity_path, log, check_cancel=check_cancel)
+
         if initial_phase in {"commit_prepared", "target_backed_up", "activated"}:
+            close_unity()
             _emit_stage(on_stage, "Recovering installation", 6, 6, False)
             if transaction.recover_commit(
                 lambda target: _verify_unity_install(target, on_verify_progress)
@@ -2029,22 +2044,24 @@ def _install_unity_asset(
                 raise UpdateCancelled("Installation cancelled")
             if _find_unity_executable(stage) is None:
                 raise UpdateTransactionError("Unity archive does not contain an executable")
-            _copy_preserved_unity_data(unity_path, stage)
             (stage / "_version.txt").write_text(version, encoding="utf-8")
 
-            transaction.set_phase("verifying_stage")
-            _emit_stage(on_stage, "Verifying staged files", 3, 6, False)
-            manifest = build_install_manifest(
-                stage,
-                component="unity",
-                version=version,
-                archive_sha256=archive_hash,
-                on_progress=on_verify_progress,
-                excluded_roots={"user_data"},
-            )
-            write_install_manifest(stage, manifest)
-            transaction.mark_stage_ready(tree_sha256=str(manifest.get("tree_sha256") or ""))
-
+        close_unity()
+        _copy_preserved_unity_data(unity_path, transaction.paths.stage)
+        transaction.set_phase("verifying_stage")
+        _emit_stage(on_stage, "Verifying staged files", 4, 6, False)
+        manifest = build_install_manifest(
+            transaction.paths.stage,
+            component="unity",
+            version=version,
+            archive_sha256=archive_hash,
+            on_progress=on_verify_progress,
+            excluded_roots={"user_data"},
+        )
+        write_install_manifest(transaction.paths.stage, manifest)
+        transaction.mark_stage_ready(tree_sha256=str(manifest.get("tree_sha256") or ""))
+        if stop_event is not None and stop_event.is_set():
+            raise UpdateCancelled("Installation cancelled")
         _emit_stage(on_stage, "Applying update", 5, 6, False)
         transaction.commit(lambda target: _verify_unity_install(target, on_verify_progress))
         _emit_stage(on_stage, "Completed", 6, 6, False)

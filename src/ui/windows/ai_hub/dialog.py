@@ -773,20 +773,29 @@ class AIHubDialog(QDialog):
         )
         self._checking_component_ids = set(state.checking_component_ids)
 
+        catalog_changed = state.revision != previous_revision
+
         if hasattr(self, "_check_indicator"):
             self._check_indicator.setVisible(bool(state.refreshing))
         if hasattr(self, "btn_refresh"):
-            self.btn_refresh.setEnabled(not state.refreshing)
+            queue_busy = bool(self._queue_state.get("running") or self._queue_state.get("pending"))
+            self.btn_refresh.setEnabled(not state.refreshing and not queue_busy)
+        catalog_rendered = False
         if state.refreshing and not self._rows:
             self._show_scroll_loading()
-        elif state.revision != previous_revision or previously_refreshing != state.refreshing:
+        elif catalog_changed or previously_refreshing != state.refreshing:
             self._refresh_views()
-        else:
+            catalog_rendered = True
+
+        if self._queue_state != getattr(self, "_rendered_queue_state", None):
             self._rebuild_queue_panel()
             self._apply_busy_state()
 
-        self._rebuild_category_list()
-        self._sync_settings_panel()
+        self._rendered_queue_state = dict(self._queue_state)
+
+        if catalog_changed and not catalog_rendered:
+            self._rebuild_category_list()
+            self._sync_settings_panel()
 
         self._set_task_status(state.task_status)
         self._set_install_logs_visible(state.install_logs_visible)

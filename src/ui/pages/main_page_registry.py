@@ -27,6 +27,7 @@ class MainPageSpec:
 MAIN_PAGE_SPECS: tuple[MainPageSpec, ...] = (
     MainPageSpec("home", "ui.pages.home_page", "build_home_page"),
     MainPageSpec("news", "ui.pages.news_page", "build_news_page"),
+    MainPageSpec("gallery", "ui.pages.gallery_page", "build_gallery_page"),
     MainPageSpec("sandbox", "ui.pages.sandbox_page", "build_sandbox_page"),
     MainPageSpec("settings", "ui.pages.settings_page", "build_settings_page"),
     MainPageSpec("wiki", "ui.pages.wiki_page", "build_wiki_page"),

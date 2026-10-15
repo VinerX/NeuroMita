@@ -109,6 +109,7 @@ class GuiThreadAffinityTests(unittest.TestCase):
 
         class AppFacade:
             backend_ready = True
+            gui_ready = True
             startup_error = ""
 
             def __init__(self) -> None:
@@ -163,6 +164,7 @@ class GuiThreadAffinityTests(unittest.TestCase):
 
         class AppFacade:
             backend_ready = True
+            gui_ready = True
             startup_error = ""
 
             def __init__(self) -> None:
@@ -206,6 +208,288 @@ class GuiThreadAffinityTests(unittest.TestCase):
             self.assertEqual([], app_facade.gui_features)
         finally:
             view_model.close()
+
+    def test_early_section_click_waits_for_gui_attachment_without_blocking_qt(self):
+        from PyQt6.QtCore import QThread, QTimer
+        from controllers.gui.presentation_hub import _ApplicationController
+        from controllers.gui.settings_page_view_model import SettingsPageViewModel
+        from ui.pages.settings.settings_presentation import (
+            PrepareSettingsSection,
+            SettingsSectionReady,
+        )
+
+        app = _ApplicationController()
+        backend = SimpleNamespace(gui_controller=None)
+        app.attach_backend(backend)
+        self.assertTrue(app.backend_ready)
+        self.assertFalse(app.gui_ready)
+        entered = threading.Event()
+        threads = []
+        effects = []
+        ticks = []
+        vm = SettingsPageViewModel(
+            host=object(),
+            app=app,
+            settings_data=SimpleNamespace(
+                prefetch_section=lambda *_args: entered.set()
+            ),
+        )
+        vm.effect_emitted.connect(effects.append)
+        timer = QTimer()
+        timer.setInterval(5)
+        timer.timeout.connect(lambda: ticks.append(1))
+        timer.start()
+        try:
+            vm.dispatch(
+                PrepareSettingsSection(
+                    category="voice",
+                    gui_feature="voice",
+                    defer_features=True,
+                )
+            )
+            self.assertTrue(
+                self._drain_until(lambda: entered.is_set() and len(ticks) >= 3)
+            )
+            self.assertEqual([], effects)
+            self.assertIn("voice", vm.state.loading_sections)
+            backend.gui_controller = SimpleNamespace(
+                ensure_optional_gui=lambda _name: threads.append(
+                    QThread.currentThread()
+                ),
+            )
+            self.assertTrue(app.gui_ready)
+            self.assertTrue(self._drain_until(lambda: bool(effects)))
+            self.assertEqual([SettingsSectionReady("voice")], effects)
+            self.assertEqual([self.application.thread()], threads)
+            self.assertEqual((), vm.state.failed_sections)
+        finally:
+            timer.stop()
+            vm.close()
+
+    def test_backend_failure_releases_section_waiting_for_gui(self):
+        from controllers.gui.presentation_hub import _ApplicationController
+        from controllers.gui.settings_page_view_model import SettingsPageViewModel
+        from ui.pages.settings.settings_presentation import (
+            PrepareSettingsSection,
+            SettingsSectionFailed,
+        )
+
+        app = _ApplicationController()
+        entered = threading.Event()
+        effects = []
+        vm = SettingsPageViewModel(
+            host=object(),
+            app=app,
+            settings_data=SimpleNamespace(
+                prefetch_section=lambda *_args: entered.set()
+            ),
+        )
+        vm.effect_emitted.connect(effects.append)
+        try:
+            vm.dispatch(
+                PrepareSettingsSection(
+                    category="voice",
+                    gui_feature="voice",
+                    defer_features=True,
+                )
+            )
+            self.assertTrue(self._drain_until(entered.is_set))
+            app.mark_failed("Startup failed")
+            self.assertTrue(self._drain_until(lambda: bool(effects)))
+            self.assertEqual(
+                [SettingsSectionFailed("voice", "RuntimeError: Startup failed")],
+                effects,
+            )
+            self.assertEqual(frozenset(), vm.state.loading_sections)
+        finally:
+            vm.close()
+
+    def test_section_preparation_leaves_qt_event_loop_responsive(self) -> None:
+        from PyQt6.QtCore import QThread, QTimer
+        from controllers.gui.settings_page_view_model import SettingsPageViewModel
+        from ui.pages.settings.settings_presentation import (
+            PrepareSettingsSection,
+            SettingsSectionReady,
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+        preparation_threads = []
+        ticks = []
+        effects = []
+
+        def prepare(category):
+            self.assertEqual("api", category)
+            preparation_threads.append(QThread.currentThread())
+            entered.set()
+            if not release.wait(2):
+                raise TimeoutError("Preparation was not released")
+
+        view_model = SettingsPageViewModel(
+            host=object(),
+            app=SimpleNamespace(backend_ready=True),
+            settings_data=SimpleNamespace(prefetch_section=lambda *_args: None),
+            prepare_section=prepare,
+        )
+        view_model.effect_emitted.connect(effects.append)
+        timer = QTimer()
+        timer.setInterval(5)
+        timer.timeout.connect(lambda: ticks.append(1))
+        timer.start()
+        try:
+            view_model.dispatch(PrepareSettingsSection(category="api"))
+            self.assertTrue(
+                self._drain_until(lambda: entered.is_set() and len(ticks) >= 3)
+            )
+            self.assertEqual([], effects)
+            self.assertIsNot(preparation_threads[0], self.application.thread())
+            release.set()
+            self.assertTrue(
+                self._drain_until(
+                    lambda: any(
+                        isinstance(effect, SettingsSectionReady) for effect in effects
+                    )
+                )
+            )
+        finally:
+            release.set()
+            timer.stop()
+            view_model.close()
+
+    def test_voice_section_is_ready_before_optional_runtime(self) -> None:
+        from controllers.gui.settings_page_view_model import SettingsPageViewModel
+        from ui.pages.settings.settings_presentation import (
+            PrepareSettingsSection,
+            SettingsSectionReady,
+            SettingsSectionFeaturesReady,
+        )
+
+        pending = Future()
+        requested = threading.Event()
+
+        def ensure_feature(_name):
+            requested.set()
+            return pending
+
+        vm = SettingsPageViewModel(
+            host=object(),
+            app=SimpleNamespace(
+                backend_ready=True,
+                gui_ready=True,
+                startup_error="",
+                ensure_feature_async=ensure_feature,
+                ensure_optional_gui=lambda _name: None,
+            ),
+            settings_data=SimpleNamespace(prefetch_section=lambda *_args: None),
+        )
+        effects = []
+        vm.effect_emitted.connect(effects.append)
+        try:
+            vm.dispatch(
+                PrepareSettingsSection(
+                    category="voice",
+                    feature_names=("local_voice", "voice_models"),
+                    gui_feature="voice",
+                    defer_features=True,
+                )
+            )
+            self.assertTrue(
+                self._drain_until(lambda: requested.is_set() and bool(effects))
+            )
+            self.assertIsInstance(effects[0], SettingsSectionReady)
+            self.assertIn("voice", vm.state.preparing_features)
+            self.assertNotIn("voice", vm.state.loading_sections)
+            self.assertFalse(pending.done())
+            pending.set_result(object())
+            self.assertTrue(
+                self._drain_until(
+                    lambda: any(
+                        isinstance(e, SettingsSectionFeaturesReady) for e in effects
+                    )
+                )
+            )
+            self.assertEqual(frozenset(), vm.state.preparing_features)
+        finally:
+            if not pending.done():
+                pending.set_result(object())
+            vm.close()
+
+    def test_deferred_runtime_error_does_not_discard_the_section(self) -> None:
+        from controllers.gui.settings_page_view_model import SettingsPageViewModel
+        from ui.pages.settings.settings_presentation import (
+            PrepareSettingsSection,
+            SettingsSectionReady,
+        )
+
+        pending = Future()
+        pending.set_exception(RuntimeError("Local backend unavailable"))
+        vm = SettingsPageViewModel(
+            host=object(),
+            app=SimpleNamespace(
+                backend_ready=True,
+                startup_error="",
+                ensure_feature_async=lambda _name: pending,
+            ),
+            settings_data=SimpleNamespace(prefetch_section=lambda *_args: None),
+        )
+        effects = []
+        vm.effect_emitted.connect(effects.append)
+        try:
+            vm.dispatch(
+                PrepareSettingsSection(
+                    category="voice",
+                    feature_names=("voice_models",),
+                    defer_features=True,
+                )
+            )
+            self.assertTrue(self._drain_until(lambda: bool(vm.state.feature_errors)))
+            self.assertEqual([SettingsSectionReady("voice")], effects)
+            self.assertEqual((), vm.state.failed_sections)
+            self.assertIn(
+                "Local backend unavailable", dict(vm.state.feature_errors)["voice"]
+            )
+        finally:
+            vm.close()
+
+    def test_catalog_views_are_created_only_when_their_dialog_opens(self) -> None:
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        from PyQt6.QtWidgets import QWidget, QDialog, QVBoxLayout
+        from controllers.gui.voice_model_controller import VoiceModelGuiController
+        from controllers.gui.asr_glossary_controller import AsrGlossaryGuiController
+
+        cases = (
+            (
+                VoiceModelGuiController,
+                "ui.windows.voice_model_view.VoiceModelSettingsView",
+                "_on_voice_models_dialog_ready",
+            ),
+            (
+                AsrGlossaryGuiController,
+                "ui.windows.asr_glossary_view.AsrGlossaryView",
+                "_on_dialog_ready",
+            ),
+        )
+        for controller_type, factory_path, ready_method in cases:
+            with self.subTest(controller=controller_type.__name__):
+                root = QWidget()
+                dialog = QDialog(root)
+                QVBoxLayout(dialog)
+                with patch.object(controller_type, "subscribe_to_events"), patch.object(
+                    controller_type, "_register_window_on_ready"
+                ), patch(
+                    factory_path, side_effect=lambda *_args, **_kwargs: QWidget()
+                ) as factory:
+                    controller = controller_type(object(), root)
+                    factory.assert_not_called()
+                    with patch.object(controller._view_model, "refresh"):
+                        getattr(controller, ready_method)(dialog, {})
+                        self.application.processEvents()
+                        self.assertEqual(1, factory.call_count)
+                        self.assertEqual(1, dialog.layout().count())
+                        self.assertIs(controller._view_model.parent(), root)
+                    controller.close()
+                root.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_native_qt_warning_is_routed_to_application_logger(self) -> None:
         from PyQt6.QtCore import qInstallMessageHandler, qWarning

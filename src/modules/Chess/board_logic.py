@@ -1,5 +1,6 @@
 # board_logic.py
 import chess
+from localization import translate as _
 
 PIECE_SYMBOLS = {
     'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚', 'p': '♟',
@@ -151,19 +152,23 @@ class PureBoardLogic:
 
     def is_game_over(self):
         if self.board.is_checkmate():
-            winner = "Черные" if self.board.turn == chess.WHITE else "Белые"
-            return True, f"Мат! Победили {winner}."
+            if self.board.turn == chess.WHITE:
+                return True, _("Мат! Победили Черные.", "Checkmate! Black wins.")
+            return True, _("Мат! Победили Белые.", "Checkmate! White wins.")
         if self.board.is_stalemate():
-            return True, "Ничья (пат)."
+            return True, _("Ничья (пат).", "Draw (stalemate).")
         if self.board.is_insufficient_material():
-            return True, "Ничья (недостаточно материала)."
+            return True, _("Ничья (недостаточно материала).", "Draw (insufficient material).")
         if self.board.is_seventyfive_moves():
-            return True, "Ничья (правило 75 ходов)."
+            return True, _("Ничья (правило 75 ходов).", "Draw (75-move rule).")
         if self.board.is_fivefold_repetition():
-            return True, "Ничья (пятикратное повторение позиции)."
+            return True, _("Ничья (пятикратное повторение позиции).", "Draw (fivefold repetition).")
         if self.board.can_claim_draw():
-             return True, "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения)."
-        return False, "Игра продолжается."
+            return True, _(
+                "Ничья (можно заявить по правилу 50 ходов или трехкратного повторения).",
+                "Draw (claim available under the 50-move rule or threefold repetition).",
+            )
+        return False, _("Игра продолжается.", "Game in progress.")
 
     def get_piece_at(self, square_name):
         try:

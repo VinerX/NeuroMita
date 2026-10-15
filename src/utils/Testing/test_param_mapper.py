@@ -7,7 +7,7 @@ _SRC_DIR = Path(__file__).resolve().parents[2]
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from handlers.llm_providers.openai_http_base import OpenAIHTTPProviderBase
+from handlers.llm_providers.protocols.chat_completions.request import apply_reasoning
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 
@@ -31,32 +31,32 @@ class ApplyReasoningTests(unittest.TestCase):
     def test_legacy_provider_never_receives_thinking(self):
         # Generic OpenAI-compatible (e.g. Mistral): no reasoning_control declared.
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(payload, _req(enable_thinking=True, thinking_budget=1024))
+        apply_reasoning(payload, _req(enable_thinking=True, thinking_budget=1024))
         self.assertNotIn("thinking", payload)
         self.assertNotIn("reasoning", payload)
 
     def test_absent_enable_thinking_emits_nothing(self):
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(payload, _req(reasoning_control="openrouter"))
+        apply_reasoning(payload, _req(reasoning_control="openrouter"))
         self.assertEqual(payload, {})
 
     def test_openrouter_transport_emits_reasoning_map(self):
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload, _req(enable_thinking=True, reasoning_control="openrouter", thinking_budget=2048)
         )
         self.assertEqual(payload["reasoning"], {"enabled": True, "max_tokens": 2048})
 
     def test_openrouter_disabled_still_sent(self):
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload, _req(enable_thinking=False, reasoning_control="openrouter")
         )
         self.assertEqual(payload["reasoning"], {"enabled": False})
 
     def test_deepseek_disabled_uses_native_object(self):
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload, _req(enable_thinking=False, reasoning_control="deepseek")
         )
         self.assertEqual(payload["thinking"], {"type": "disabled"})
@@ -64,7 +64,7 @@ class ApplyReasoningTests(unittest.TestCase):
     def test_reasoning_effort_disabled_sends_none(self):
         # LM Studio: единственный способ заглушить мысли Gemma 4 / Qwen3.
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload, _req(enable_thinking=False, reasoning_control="reasoning_effort")
         )
         self.assertEqual(payload["reasoning_effort"], "none")
@@ -74,14 +74,14 @@ class ApplyReasoningTests(unittest.TestCase):
         # умолчанию, а "medium" на модели, знающей лишь on/off (gemma-4-12b-qat),
         # даёт WARN и откат на 'on' — тот же результат, но с шумом в логах.
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload, _req(enable_thinking=True, reasoning_control="reasoning_effort")
         )
         self.assertNotIn("reasoning_effort", payload)
 
     def test_reasoning_effort_honours_explicit_level(self):
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload,
             _req(enable_thinking=True, reasoning_control="reasoning_effort", reasoning_effort="high"),
         )
@@ -90,7 +90,7 @@ class ApplyReasoningTests(unittest.TestCase):
     def test_reasoning_effort_ignores_unknown_level(self):
         # Мусорный уровень трактуем как «уровень не выбран» — не шлём ничего.
         payload = {}
-        OpenAIHTTPProviderBase._apply_reasoning(
+        apply_reasoning(
             payload,
             _req(enable_thinking=True, reasoning_control="reasoning_effort", reasoning_effort="ultra"),
         )

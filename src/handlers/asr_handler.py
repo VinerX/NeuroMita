@@ -1,3 +1,8 @@
+from domain.audio_input import MicrophoneSelection
+from infrastructure.audio.selection_wire import (
+    as_microphone_selection,
+    capture_selection_payload,
+)
 from core.error_utils import format_exception
 import time
 import os
@@ -208,6 +213,7 @@ class SpeechRecognition:
             logger.warning(f"ASR gate update failed: {format_exception(exc)}")
 
     microphone_index = 0
+    microphone_selection = MicrophoneSelection()
     active = True
     _recognizer_type = "google"
     _engine_settings: Dict[str, dict] = {}
@@ -451,7 +457,7 @@ class SpeechRecognition:
 
                         capture = AudioCaptureService(logger)
                         await capture.run(
-                            microphone_index=SpeechRecognition.microphone_index,
+                            selection=SpeechRecognition.microphone_selection,
                             config=AudioCaptureConfig(
                                 sample_rate=SpeechRecognition.VOSK_SAMPLE_RATE,
                                 chunk_size=SpeechRecognition.CHUNK_SIZE,
@@ -467,7 +473,9 @@ class SpeechRecognition:
                             input_gate=SpeechRecognition._input_gate,
                             on_segment_context=transcribe_segment,
                             background_transcription=True,
-                            on_activity=lambda data: get_event_bus().emit(Events.Speech.ASR_CAPTURE_PROGRESS, data),
+                            on_activity=lambda data: get_event_bus().emit(
+                                Events.Speech.ASR_CAPTURE_PROGRESS, data
+                            ),
                         )
                     else:
                         logger.error(
@@ -522,12 +530,14 @@ class SpeechRecognition:
             return None
 
     @staticmethod
-    def _live_payload(device_id: int) -> dict:
+    def _live_payload(selection: MicrophoneSelection | int) -> dict:
+        selection = as_microphone_selection(selection)
         engine_id = SpeechRecognition._recognizer_type
         return {
             "engine_id": engine_id,
-            "microphone_index": int(device_id or 0),
-            "engine_settings": SpeechRecognition._engine_settings.get(engine_id, {}) or {},
+            **capture_selection_payload(selection),
+            "engine_settings": SpeechRecognition._engine_settings.get(engine_id, {})
+            or {},
             "input_gate": {**SpeechRecognition._input_gate.snapshot(), "active": False},
             "vad": {
                 "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
@@ -541,7 +551,10 @@ class SpeechRecognition:
         }
 
     @staticmethod
-    def speech_recognition_start(device_id: int, loop) -> bool:
+    def speech_recognition_start(selection: MicrophoneSelection | int, loop) -> bool:
+        selection = as_microphone_selection(selection)
+        device_id = selection.index or 0
+        SpeechRecognition.microphone_selection = selection
         SpeechRecognition._input_gate.reset()
         with SpeechRecognition._start_lock:
             if SpeechRecognition._is_running:
@@ -570,7 +583,7 @@ class SpeechRecognition:
                     "The ASR service is unavailable. See the log for details.",
                 ))
             else:
-                start_payload = SpeechRecognition._live_payload(device_id)
+                start_payload = SpeechRecognition._live_payload(selection)
                 activate = getattr(eng, "activate_environment", None)
                 try:
                     activated = callable(activate) and activate(
@@ -625,8 +638,12 @@ class SpeechRecognition:
         return True
 
     @staticmethod
-    def speech_recognition_switch_microphone(device_id: int) -> bool:
+    def speech_recognition_switch_microphone(
+        selection: MicrophoneSelection | int,
+    ) -> bool:
         """Switch only the managed capture stream, keeping loaded models alive."""
+        selection = as_microphone_selection(selection)
+        device_id = selection.index or 0
 
         if not SpeechRecognition._is_running or not SpeechRecognition._remote_asr_mode:
             return False
@@ -642,7 +659,7 @@ class SpeechRecognition:
             future = eng.call(
                 "asr",
                 "switch_input",
-                {"microphone_index": int(device_id or 0)},
+                capture_selection_payload(selection),
             )
             switched = bool(future.result(timeout=15.0))
         except Exception as exc:
@@ -655,13 +672,14 @@ class SpeechRecognition:
 
         if switched:
             SpeechRecognition.microphone_index = int(device_id or 0)
+            SpeechRecognition.microphone_selection = selection
             update_replay = getattr(eng, "update_runtime_validation_payload", None)
             if callable(update_replay):
                 updated = bool(
                     update_replay(
                         "asr",
                         SpeechRecognition._recognizer_type,
-                        SpeechRecognition._live_payload(device_id),
+                        SpeechRecognition._live_payload(selection),
                     )
                 )
                 if not updated:

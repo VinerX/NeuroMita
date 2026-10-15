@@ -523,13 +523,17 @@ class AsrGlossaryView(QWidget):
             if ftype == "combobox":
                 w = QComboBox()
                 opts = field.get("options", []) or []
-                w.addItems([str(x) for x in opts])
-                idx = w.findText(str(val))
+                labels = field.get("option_labels") or {}
+                for option in opts:
+                    w.addItem(str(labels.get(option, option)), str(option))
+                w.setEnabled(field.get("enabled", True) and not field.get("locked", False))
+                w.setToolTip(_(field.get("help_ru", ""), field.get("help_en", "")))
+                idx = w.findData(str(val))
                 if idx >= 0:
                     w.setCurrentIndex(idx)
-                w.currentTextChanged.connect(
-                    lambda v, e=engine_id, k=key: self._view_model.dispatch(
-                        SetAsrOption(e, k, v)
+                w.currentIndexChanged.connect(
+                    lambda index, ww=w, e=engine_id, k=key: self._view_model.dispatch(
+                        SetAsrOption(e, k, ww.itemData(index))
                     )
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)

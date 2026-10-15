@@ -11,8 +11,6 @@ from .base_controller import BaseController
 from .voice_models_view_model import VoiceModelsViewModel
 from utils import getTranslationVariant as _
 
-from ui.windows.voice_model_view import VoiceModelSettingsView
-
 
 class VoiceModelGuiController(BaseController):
     def __init__(self, main_controller, view):
@@ -26,14 +24,11 @@ class VoiceModelGuiController(BaseController):
             open_documentation=self.open_documentation,
             resolve_description=self._resolve_description,
         )
-        self._vm_view: VoiceModelSettingsView | None = VoiceModelSettingsView(
-            self._view_model,
-            auto_initialize=False,
-        )
+        self._vm_view = None
+        self._view_model.setParent(view)
         super().__init__(main_controller, view)
 
         self._register_window_on_ready()
-
 
     # Passive-view command/data boundary.
     def model_catalog_snapshot(self):
@@ -112,8 +107,13 @@ class VoiceModelGuiController(BaseController):
     def _attach_view_to_dialog(self, dialog):
         if not dialog or not hasattr(dialog, "layout") or dialog.layout() is None:
             return
-        if not self._vm_view:
-            return
+        if self._vm_view is None:
+            from ui.windows.voice_model_view import VoiceModelSettingsView
+
+            self._vm_view = VoiceModelSettingsView(
+                self._view_model,
+                auto_initialize=False,
+            )
 
         try:
             if self._vm_view.parent() is not None:

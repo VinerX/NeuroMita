@@ -158,12 +158,17 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v.cancel_button.clicked.connect(self._safe(self._cancel_changes, "cancel_changes"))
 
         v.test_button.clicked.connect(self._safe(self._test_connection, "test_connection"))
+        v.account_button.clicked.connect(self._safe(self._show_accounts, 'provider_accounts'))
+        v.models_button.clicked.connect(self._safe(self._load_account_models, 'provider_models'))
 
         v.key_visibility_button.clicked.connect(self._safe(self._toggle_key_visibility, "toggle_key_visibility"))
         v.template_combo.currentIndexChanged.connect(self._safe(self._on_template_changed_async, "template_changed"))
 
         v.protocol_row.combo.currentIndexChanged.connect(self._safe(self._on_protocol_changed, "protocol_changed"))
 
+        v.api_test_url_row.edit.textChanged.connect(
+            self._safe(self._on_field_changed, "test_url_changed")
+        )
         v.api_url_row.edit.textChanged.connect(self._safe(self._on_field_changed, "url_changed"))
         v.api_model_row.edit.textChanged.connect(self._safe(self._on_field_changed, "model_changed"))
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))
@@ -230,15 +235,12 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         Открываем окно через WindowManager (GUI controller).
         """
         v = self.view
-        base = self._parse_base(v.template_combo.currentData())
-
-        # 3) если выбран шаблон — НЕ показывать конфигурацию
-        if base is not None:
+        if not self._pipeline_editable():
             QMessageBox.information(
                 v,
                 _("Недоступно", "Not available"),
-                _("Pipeline можно настраивать только для пресетов без шаблона.",
-                  "Pipeline can be configured only for presets without a template."),
+                _("Этот шаблон не поддерживает настройку обработки сообщений.",
+                  "This template does not support message processing customization."),
             )
             return
 
@@ -256,27 +258,24 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
             self._protocol_overrides = dict(self._protocol_overrides or {})
             self._protocol_overrides["transforms"] = [t for t in (new_transforms or []) if isinstance(t, dict) and t.get("id")]
 
-            # refresh view
-            lines = []
-            for t in self._protocol_overrides["transforms"]:
-                tid = str(t.get("id") or "")
-                params = t.get("params")
-                lines.append(f"- {tid}" + (f"  params={params}" if params else ""))
-
-            v.protocol_transforms_view.setPlainText("\n".join(lines))
+            self._refresh_protocol_transforms()
             self._on_field_changed()
 
         # show via window manager
-        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {
-            "window_id": "protocol_pipeline",
-            "payload": {
-                "available_ids": available_ids,
-                "base_transforms": base_transforms,
-                "current_transforms": current_transforms,
-                "on_apply": on_apply,
-                "modal": True,
-            }
-        })
+        self.event_bus.emit(
+            Events.GUI.SHOW_WINDOW,
+            {
+                "window_id": "protocol_pipeline",
+                "payload": {
+                    "available_ids": available_ids,
+                    "transform_catalog": self._transform_catalog or [],
+                    "base_transforms": base_transforms,
+                    "current_transforms": current_transforms,
+                    "on_apply": on_apply,
+                    "modal": True,
+                },
+            },
+        )
 
     def _effective_transforms_for_current(self) -> list[dict]:
         pid = self._current_protocol_id_ui() or self._protocol_default_id

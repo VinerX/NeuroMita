@@ -9,6 +9,7 @@ from typing import Optional, List
 import numpy as np
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from handlers.asr_models.asr_languages import asr_language_field, asr_language_names
 from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
@@ -89,7 +90,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
                 "Offline Whisper via faster-whisper (CTranslate2). Fast on NVIDIA GPU (CUDA), "
                 "CPU is supported as well. Requires downloading the model into local cache."
             ),
-            "languages": ["Multilingual"],
+            "languages": asr_language_names("whisper"),
             "backend": "cpu",
             "gpu_vendor": ["NVIDIA", "CPU"],
             "tags": [
@@ -133,8 +134,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
              "type": "combobox", "options": ["large-v3-turbo", "large-v3"], "default": "large-v3-turbo"},
             {"key": "compute_type", "label_ru": "Точность", "label_en": "Compute type",
              "type": "combobox", "options": ["auto", "int8", "float16", "float32", "int8_float16"], "default": "auto"},
-            {"key": "language", "label_ru": "Язык", "label_en": "Language",
-             "type": "combobox", "options": ["ru", "en", "auto"], "default": "ru"},
+            asr_language_field("whisper"),
             {"key": "beam_size", "label_ru": "Beam size", "label_en": "Beam size",
              "type": "combobox", "options": [1, 2, 3, 5, 8], "default": 5},
         ]
@@ -143,6 +143,10 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         return {"device": "auto", "model": "large-v3-turbo", "compute_type": "auto", "language": "ru", "beam_size": 5}
 
     def apply_settings(self, settings: dict):
+        if "language" in settings:
+            result = self.validate_settings({"language": settings["language"]})
+            if not result.ok:
+                raise ValueError(f"Invalid ASR language: {result.errors}")
         dev = settings.get("device")
         mdl = settings.get("model")
         ct = settings.get("compute_type")

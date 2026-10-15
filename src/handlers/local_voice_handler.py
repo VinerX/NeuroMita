@@ -173,11 +173,11 @@ class LocalVoice:
         model = self._registry.get(model_id)
         if not model:
             logger.error(f"Unknown model id for init: {model_id}")
-            return False
+            raise ValueError(f"Unknown voice model: {model_id}")
 
         if not self.is_model_installed(model_id):
             logger.error(f"Model '{model_id}' is not installed.")
-            return False
+            raise RuntimeError(f"Voice model '{model_id}' is not installed in the active runtime")
 
         self.current_model_id = model_id
         ok = False
@@ -189,7 +189,7 @@ class LocalVoice:
             ok = bool(model.initialize(init=init))
         except Exception as e:
             logger.error(f"initialize_model failed for {model_id}: {format_exception(e)}", exc_info=True)
-            ok = False
+            raise
 
         if ok:
             self.active_model_instance = model

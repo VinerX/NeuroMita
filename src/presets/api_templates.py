@@ -61,8 +61,12 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-2.5-pro",
                 "match": "gemini-2.5-pro",
                 "parameters": [
-                    "temperature", "max_tokens", "top_p", "top_k",
-                    "presence_penalty", "frequency_penalty",
+                    "temperature",
+                    "max_tokens",
+                    "top_p",
+                    "top_k",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "budget",
@@ -77,8 +81,12 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-2.5-flash",
                 "match": "gemini-2.5-flash",
                 "parameters": [
-                    "temperature", "max_tokens", "top_p", "top_k",
-                    "presence_penalty", "frequency_penalty",
+                    "temperature",
+                    "max_tokens",
+                    "top_p",
+                    "top_k",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "budget",
@@ -93,8 +101,12 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-2.5-flash-lite",
                 "match": "gemini-2.5-flash-lite",
                 "parameters": [
-                    "temperature", "max_tokens", "top_p", "top_k",
-                    "presence_penalty", "frequency_penalty",
+                    "temperature",
+                    "max_tokens",
+                    "top_p",
+                    "top_k",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "budget",
@@ -109,7 +121,9 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-3.1-flash-lite",
                 "match": "gemini-3.1-flash-lite",
                 "parameters": [
-                    "max_tokens", "presence_penalty", "frequency_penalty",
+                    "max_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "level",
@@ -124,7 +138,9 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-3.5-flash-lite",
                 "match": "gemini-3.5-flash-lite",
                 "parameters": [
-                    "max_tokens", "presence_penalty", "frequency_penalty",
+                    "max_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "level",
@@ -139,7 +155,9 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-3.5-flash",
                 "match": "gemini-3.5-flash",
                 "parameters": [
-                    "max_tokens", "presence_penalty", "frequency_penalty",
+                    "max_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "level",
@@ -153,7 +171,9 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-3.6-flash",
                 "match": "gemini-3.6-flash",
                 "parameters": [
-                    "max_tokens", "presence_penalty", "frequency_penalty",
+                    "max_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "level",
@@ -168,7 +188,9 @@ API_TEMPLATES_DATA = [
                 "id": "gemini-3.7-flash",
                 "match": "gemini-3.7-flash",
                 "parameters": [
-                    "max_tokens", "presence_penalty", "frequency_penalty",
+                    "max_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
                 ],
                 "thinking": {
                     "transport": "level",
@@ -302,6 +324,11 @@ API_TEMPLATES_DATA = [
     {
         "id": 9,
         "name": "LM Studio",
+        "pipeline_editable": True,
+        "url_editable": True,
+        "test_url_editable": False,
+        "request_path": "/v1/chat/completions",
+        "test_path": "/v1/models",
         "settings_schema_id": "local-openai",
         "pricing": "free",
         "badge_kind": "local",
@@ -317,6 +344,11 @@ API_TEMPLATES_DATA = [
     {
         "id": 10,
         "name": "Ollama",
+        "pipeline_editable": True,
+        "url_editable": True,
+        "test_url_editable": False,
+        "request_path": "/v1/chat/completions",
+        "test_path": "/v1/models",
         "pricing": "free",
         "badge_kind": "local",
         "url": "http://127.0.0.1:11434/v1/chat/completions",
@@ -330,6 +362,38 @@ API_TEMPLATES_DATA = [
         "test_url": "http://127.0.0.1:11434/v1/models",
         "documentation_url": "https://ollama.com/blog/openai-compatibility",
         "models_url": "https://ollama.com/search",
+        "key_url": "",
+    },
+    {
+        "id": 13,
+        "name": "OpenAI Responses (API key)",
+        "settings_schema_id": "openai-responses",
+        "pricing": "paid",
+        "url_editable": True,
+        "test_url_editable": False,
+        "url": "https://api.openai.com/v1/responses",
+        "default_model": "gpt-4o",
+        "known_models": [],
+        "protocol_id": "openai_responses_default",
+        "test_url": "https://api.openai.com/v1/models",
+        "documentation_url": "https://developers.openai.com/api/docs/guides/migrate-to-responses",
+        "models_url": "https://developers.openai.com/api/docs/models",
+        "key_url": "https://platform.openai.com/api-keys",
+    },
+    {
+        "id": 12,
+        "name": "ChatGPT Plan (Codex)",
+        "preferred_model": "gpt-6-luna",
+        "settings_schema_id": "chatgpt-plan",
+        "pricing": "paid",
+        "badge_kind": "subscription",
+        "url": "https://api.openai.com/v1/responses",
+        "default_model": "",
+        "known_models": [],
+        "protocol_id": "chatgpt_plan_default",
+        "test_url": "https://api.openai.com/v1/models",
+        "documentation_url": "https://developers.openai.com/siwc/token-sharing-open-source",
+        "models_url": "https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference",
         "key_url": "",
     },
 ]

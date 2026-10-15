@@ -351,7 +351,6 @@ register_pip_checker("silero-vad", module="silero_vad")
 register_pip_checker("openai-whisper", module="whisper")
 register_pip_checker("onnxruntime-directml", module="onnxruntime")
 register_pip_checker("optimum", extras=["onnxruntime"], module="optimum.onnxruntime")
-register_pip_checker("g4f", module="g4f")
 register_pip_checker("tts-with-rvc", module="tts_with_rvc")
 register_pip_checker(
     "tts-with-rvc-onnx",

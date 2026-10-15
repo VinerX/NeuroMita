@@ -308,7 +308,9 @@ class ResponseSegment(BaseModel):
         """Drop malformed intents before per-item validation.
 
         Rules: ``type`` must be a non-empty string; ``payload`` defaults to an
-        empty dict when missing/invalid. There is no fixed intent-type registry
+        empty dict when missing/invalid. Inventory item operations also accept
+        a string item name, normalized to ``{"object": name}`` for Unity.
+        There is no fixed intent-type registry
         here — any well-formed ``type`` passes through unchanged for the game
         runtime to interpret. Only malformed entries are discarded (with a
         warning) instead of failing the whole response.
@@ -334,10 +336,18 @@ class ResponseSegment(BaseModel):
             if isinstance(payload, str):
                 try:
                     decoded = _json.loads(payload)
-                    payload = decoded if isinstance(decoded, dict) else {}
-                except Exception:
+                except (ValueError, TypeError):
+                    decoded = payload if not payload.lstrip().startswith(("{", "[")) else None
+                if isinstance(decoded, dict):
+                    payload = decoded
+                elif (itype.strip() in {
+                    "inventory.take", "inventory.collect", "inventory.drop",
+                    "inventory.return", "inventory.equip_right", "inventory.equip_left",
+                } and isinstance(decoded, str) and decoded.strip()):
+                    payload = {"object": decoded.strip()}
+                else:
                     logger.warning(
-                        "[StructuredResponse] Intent '%s' payload is not valid JSON, defaulting to {}",
+                        "[StructuredResponse] Intent '%s' payload is not an object, defaulting to {}",
                         itype,
                     )
                     payload = {}

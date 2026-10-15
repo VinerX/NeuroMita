@@ -68,6 +68,22 @@ class HistoryUiProjector:
             target = str(m.get("target") or "")
 
             content = m.get("content")
+            from core.tv_observation import normalize_tv_observation, format_tv_observation, tv_observation_part, is_tv_observation_event
+            tv = normalize_tv_observation(m.get("tv_observation"))
+            if tv:
+                context_text = format_tv_observation(tv)
+                parts = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+                content = []
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        text = str(part.get("text") or "").replace(context_text, "").strip()
+                        if text:
+                            content.append({**part, "text": text})
+                    else:
+                        content.append(part)
+                content.append(tv_observation_part(tv))
 
             if role == "user" and not self._has_visible_user_text(content):
                 continue
@@ -91,7 +107,9 @@ class HistoryUiProjector:
                 if isinstance(_raw, str) and _raw.lstrip().startswith(_SYS_PREFIX):
                     is_system_as_user = True
 
-            if role in ("user", "assistant"):
+            if is_tv_observation_event(m):
+                ui_role = "user"
+            elif role in ("user", "assistant"):
                 if has_player_actor and not has_non_player_actor:
                     ui_role = "user"
                     speaker_label = ""

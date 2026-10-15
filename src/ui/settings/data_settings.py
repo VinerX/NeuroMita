@@ -3,6 +3,7 @@
 Панель настроек для сбора данных дообучения.
 """
 from __future__ import annotations
+from ui.widgets.settings_section_header import create_settings_header
 from core.error_utils import format_exception
 
 import os
@@ -15,7 +16,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 
-from ui.gui_templates import create_section_header, SettingsBodyWidget
+from ui.gui_templates import SettingsBodyWidget
 from ui.settings.settings_access import get_setting, set_setting
 from ui.settings.finetune_data_presentation import (
     ClearFineTuneData,
@@ -36,7 +37,7 @@ def setup_data_settings_controls(self, parent, *, view_model):
             method(self, effect.title, effect.message)
 
     view_model.effect_emitted.connect(_handle_effect)
-    create_section_header(parent, _("Сбор данных", "Data Collection"))
+    create_settings_header(parent, "data_collection")
 
     # ── Explanatory info block ────────────────────────────────────────────────
     info_widget = SettingsBodyWidget()
@@ -149,10 +150,6 @@ def setup_data_settings_controls(self, parent, *, view_model):
     limit_spin.setSuffix(_(" записей", " records"))
     tr_set(limit_spin, "Сколько последних записей хранить. Старые удаляются автоматически.",
         "How many most-recent records to keep. Older ones are pruned automatically.", "setToolTip")
-    limit_spin.setStyleSheet(
-        "QSpinBox { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
-        "color: #f3edf6; font-size: 11px; padding: 5px 8px; }"
-    )
     limit_row.addWidget(limit_spin)
 
     unlimited_chk = tr_set(QCheckBox(), "Без лимита", "Unlimited")
@@ -207,10 +204,6 @@ def setup_data_settings_controls(self, parent, *, view_model):
 
     path_edit = QLineEdit(_get_current_data_dir(self))
     path_edit.setReadOnly(True)
-    path_edit.setStyleSheet(
-        "QLineEdit { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
-        "color: #bca9bb; font-size: 11px; padding: 6px 10px; }"
-    )
     path_row.addWidget(path_edit, stretch=1)
 
     browse_btn = tr_set(QPushButton(), "Обзор...", "Browse...")

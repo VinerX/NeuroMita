@@ -82,3 +82,14 @@ class NetworkErrorClassificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_invalid_url_and_missing_protocol_are_configuration_errors():
+    for error in (
+        httpx.UnsupportedProtocol("Missing protocol"),
+        httpx.InvalidURL("Invalid port"),
+    ):
+        result = classify_network_error("test", error, url="111232132")
+        assert result.code == "network.url.invalid"
+        assert result.phase == "configuration"
+        assert not result.retryable

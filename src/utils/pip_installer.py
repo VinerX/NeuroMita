@@ -221,7 +221,7 @@ class PipInstaller:
         self.update_progress = update_progress or (lambda *_: None)
         self.progress_window = progress_window
         # Защищенные пакеты по умолчанию
-        self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
+        self.protected_packages = protected_packages or ["gigaam", "pillow", "silero-vad"]
         self._preferred_installer_cmd: Optional[List[str]] = None
         self._uv_probe_complete: bool = False
         self._uv_available: bool = False
@@ -393,6 +393,8 @@ class PipInstaller:
                 "--index-strategy",
             )
             raw_extra = list(extra_args or [])
+            if "--no-deps" in raw_extra:
+                compile_cmd.append("--no-deps")
             index = 0
             while index < len(raw_extra):
                 value = str(raw_extra[index])

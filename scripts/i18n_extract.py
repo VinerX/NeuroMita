@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 # Имена функций локализации с сигнатурой (ru, en) — включая алиасы `import ... as _`.
-TR_FUNCS = {"_", "getTranslationVariant", "t", "_g"}
+TR_FUNCS = {"_", "getTranslationVariant", "t", "_g", "translate", "translation_source"}
 # Функции с сигнатурой (lang, ru, en) — ключ/инлайн сдвинуты на один аргумент.
 TR_FUNCS_LANG_FIRST = {"translate_for_language"}
 # Live-локализация виджетов: первый аргумент — сам виджет, затем (ru, en).
@@ -57,6 +57,16 @@ def _source_pairs(tree: ast.AST) -> list[tuple[str, str]]:
         if not any(name.endswith("_SOURCES") for name in names):
             continue
         value = node.value
+        if isinstance(value, (ast.Tuple, ast.List)):
+            for row in value.elts:
+                if not isinstance(row, (ast.Tuple, ast.List)) or len(row.elts) != 2:
+                    continue
+                source = row.elts[1]
+                if isinstance(source, (ast.Tuple, ast.List)) and len(source.elts) == 2:
+                    ru, en = map(_const_str, source.elts)
+                    if ru is not None:
+                        pairs.append((ru, en or ""))
+            continue
         if not isinstance(value, ast.Dict):
             continue
         for item in value.values:
@@ -67,6 +77,35 @@ def _source_pairs(tree: ast.AST) -> list[tuple[str, str]]:
             if ru is not None:
                 pairs.append((ru, en or ""))
     return pairs
+
+
+def _translation_arguments(tree: ast.AST) -> dict[str, set[tuple[int, int]]]:
+    functions = {name: {(0, 1)} for name in TR_FUNCS}
+    functions.update({name: {(1, 2)} for name in TR_FUNCS_LANG_FIRST})
+    functions.update({name: {indexes} for name, indexes in TR_FUNCS_WIDGET_FIRST.items()})
+    definitions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+    changed = True
+    while changed:
+        changed = False
+        for definition in definitions:
+            params = [arg.arg for arg in definition.args.posonlyargs + definition.args.args]
+            for call in ast.walk(definition):
+                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                    continue
+                for ru_index, en_index in list(functions.get(call.func.id, ())):
+                    if len(call.args) <= en_index:
+                        continue
+                    ru, en = call.args[ru_index], call.args[en_index]
+                    if not (isinstance(ru, ast.Name) and isinstance(en, ast.Name)):
+                        continue
+                    if ru.id not in params or en.id not in params:
+                        continue
+                    pair = params.index(ru.id), params.index(en.id)
+                    target = functions.setdefault(definition.name, set())
+                    if pair not in target:
+                        target.add(pair)
+                        changed = True
+    return functions
 
 
 def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
@@ -94,6 +133,7 @@ def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
     dynamic = 0
 
     pairs.extend(_source_pairs(tree))
+    translation_arguments = _translation_arguments(tree)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -106,26 +146,16 @@ def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
             name = func.attr
         else:
             name = None
-        lang_first = name in TR_FUNCS_LANG_FIRST
-        widget_first = TR_FUNCS_WIDGET_FIRST.get(name)
-        if name not in TR_FUNCS and not lang_first and widget_first is None:
-            continue
-        # Сдвиг аргументов для (lang, ru, en) против (ru, en).
-        if widget_first is not None:
-            ru_idx, en_idx = widget_first
-        else:
-            ru_idx, en_idx = (1, 2) if lang_first else (0, 1)
-        if len(node.args) <= ru_idx:
-            continue
-        ru = _const_str(node.args[ru_idx])
-        if ru is None:
-            # Ключевой аргумент не строковый литерал (f-строка/переменная) — пропускаем.
-            dynamic += 1
+        for ru_idx, en_idx in sorted(translation_arguments.get(name, ())):
+            if len(node.args) <= ru_idx:
+                continue
+            ru = _const_str(node.args[ru_idx])
             total += 1
-            continue
-        total += 1
-        en = _const_str(node.args[en_idx]) if len(node.args) > en_idx else None
-        pairs.append((ru, en or ""))
+            if ru is None:
+                dynamic += 1
+                continue
+            en = _const_str(node.args[en_idx]) if len(node.args) > en_idx else None
+            pairs.append((ru, en or ""))
 
     return pairs, total, dynamic, None
 

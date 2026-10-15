@@ -10,8 +10,6 @@ from services.contracts import (
 from .base_controller import BaseController
 from .asr_glossary_view_model import AsrGlossaryViewModel
 
-from ui.windows.asr_glossary_view import AsrGlossaryView
-
 
 class AsrGlossaryGuiController(BaseController):
     def __init__(self, main_controller, view):
@@ -22,8 +20,8 @@ class AsrGlossaryGuiController(BaseController):
             install_model=self._install_model,
             set_option=self._set_recognizer_option,
         )
-        self._glossary_view: AsrGlossaryView | None = AsrGlossaryView(self._view_model)
-        self._view_model.setParent(self._glossary_view)
+        self._glossary_view = None
+        self._view_model.setParent(view)
         super().__init__(main_controller, view)
 
         self._register_window_on_ready()
@@ -42,12 +40,14 @@ class AsrGlossaryGuiController(BaseController):
     def _on_dialog_ready(self, dialog, payload: dict):
         self._dialog = dialog
 
-        if not self._glossary_view:
-            return
-
         if dialog.layout() is None:
             logger.error("ASR glossary dialog has no layout")
             return
+
+        if self._glossary_view is None:
+            from ui.windows.asr_glossary_view import AsrGlossaryView
+
+            self._glossary_view = AsrGlossaryView(self._view_model)
 
         try:
             if self._glossary_view.parent() is not None:
@@ -116,7 +116,6 @@ class AsrGlossaryGuiController(BaseController):
                 }
             )
         return result
-
 
     def _set_recognizer_option(self, engine_id: str, key: str, value) -> None:
         catalog = services().get(InstallableCatalogService)

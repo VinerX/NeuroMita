@@ -102,6 +102,20 @@ class GeminiMessageOrderTests(unittest.TestCase):
         ])
         self.assertEqual(["user", "model"], [c["role"] for c in out["contents"]])
 
+    def test_inline_native_function_payloads_remain_structured(self):
+        for content in [
+            {"functionCall": {"name": "lookup", "args": {"query": "time"}}},
+            {"functionResponse": {"name": "lookup", "response": {"time": "12:00"}}},
+        ]:
+            with self.subTest(content=content):
+                out = _format([
+                    {"role": "user", "content": "question"},
+                    {"role": "system", "content": content},
+                ])
+                self.assertEqual(out["contents"][1], {
+                    "role": "user", "parts": [{"text": "[SYSTEM INFO]"}, content]
+                })
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -207,6 +207,13 @@ class ChessGame(GameInterface):
 
     def _dispatch_game_over_reaction(self, event: Dict[str, Any]):
         outcome = str(event.get("outcome") or "The chess game has ended.")
+        result = {
+            "player_win": "The player won; you lost.",
+            "mita_win": "You won; the player lost.",
+            "draw": "The game was a draw.",
+        }.get(event.get("result"), "")
+        if result:
+            outcome = f"{result} {outcome}"
         choice = event.get("choice")
         if choice == "restart":
             instruction = (

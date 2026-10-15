@@ -7,6 +7,7 @@ from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from typing import Any
 
 from core.app_paths import ai_worker_log_path, runtime_log_path
+from core.console_logging import ConsoleLogHandler
 from core.trace_context import current_trace_id
 
 try:
@@ -143,8 +144,8 @@ class CustomLogger(logging.Logger):
                     pass
 
         # Консольный обработчик
+        console_handler = ConsoleLogHandler()
         if colorlog is not None:
-            console_handler = colorlog.StreamHandler()
             console_handler.setFormatter(
                 colorlog.ColoredFormatter(
                     '%(log_color)s%(levelname)-8s %(location)-30s %(trace_short_prefix)s| %(message)s',
@@ -161,7 +162,6 @@ class CustomLogger(logging.Logger):
                 )
             )
         else:
-            console_handler = logging.StreamHandler()
             console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s %(trace_short_prefix)s| %(message)s'))
         console_handler.addFilter(ProjectFilter())
         console_handler.addFilter(LocationFilter())

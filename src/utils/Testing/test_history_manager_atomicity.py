@@ -53,6 +53,11 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
         self._conn_patcher.start()
         DatabaseManager._instance = None
         DatabaseManager._path_override = None
+        self._executor_patcher = patch.object(
+            HistoryManager, "_get_embed_executor", return_value=_FakeExecutor()
+        )
+        self._executor_patcher.start()
+        self.addCleanup(self._executor_patcher.stop)
         self.hm = HistoryManager(storage_name="Test", character_id="char:test")
 
     def tearDown(self) -> None:

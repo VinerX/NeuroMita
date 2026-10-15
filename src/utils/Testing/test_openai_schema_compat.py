@@ -10,7 +10,7 @@ if str(PROJECT_SRC) not in sys.path:
 
 from schemas.game_master_response import GameMasterResponse
 from schemas.structured_response import StructuredResponse, build_structured_response_model
-from handlers.llm_providers.openai_http_base import _next_response_format_fallback
+from handlers.llm_providers.protocols.chat_completions.request import _next_response_format_fallback
 
 
 class OpenAISchemaCompatibilityTests(unittest.TestCase):

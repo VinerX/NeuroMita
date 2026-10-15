@@ -1,3 +1,4 @@
+from domain.audio_input import MicrophoneSelection
 import asyncio
 import threading
 import types
@@ -336,9 +337,15 @@ def test_worker_preserves_release_text_but_cancellation_during_inference_discard
 
     async def run():
         assert await worker._start_live_internal(
-            engine_id="test", mic_index=0, engine_settings={}, sample_rate=16000,
-            chunk_size=512, vad_threshold=0.5, silence_timeout=0.6,
-            pre_buffer_duration=0.4, max_speech_duration=30,
+            engine_id="test",
+            selection=MicrophoneSelection(index=0),
+            engine_settings={},
+            sample_rate=16000,
+            chunk_size=512,
+            vad_threshold=0.5,
+            silence_timeout=0.6,
+            pre_buffer_duration=0.4,
+            max_speech_duration=30,
         )
         trigger.set()
         assert await asyncio.to_thread(finished.wait, 2.0)
@@ -439,9 +446,15 @@ def test_old_capture_generation_cannot_stop_replacement_capture(monkeypatch):
     monkeypatch.setattr(capture.AudioCaptureService, "run", run_capture)
     async def run():
         await worker._start_live_internal(
-            engine_id="test", mic_index=0, engine_settings={}, sample_rate=16000,
-            chunk_size=512, vad_threshold=0.5, silence_timeout=0.6,
-            pre_buffer_duration=0.4, max_speech_duration=30,
+            engine_id="test",
+            selection=MicrophoneSelection(index=0),
+            engine_settings={},
+            sample_rate=16000,
+            chunk_size=512,
+            vad_threshold=0.5,
+            silence_timeout=0.6,
+            pre_buffer_duration=0.4,
+            max_speech_duration=30,
         )
         try:
             worker._capture_generation += 1

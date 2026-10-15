@@ -21,9 +21,10 @@ class PresetModelSettingsController(QObject):
         form.export_requested.connect(self.export_definition)
         form.edit_requested.connect(self.edit_definition)
 
-    def load(self, preset, dialect, settings=None):
+    def load(self, preset, dialect, settings=None, *, provider=""):
         self.dialect = dialect
         document = self.service.for_preset(preset, dialect, settings)
+        document.setdefault("sparse_response", provider == "chatgpt_plan")
         self._render(document)
 
     def _render(self, document):
@@ -41,9 +42,13 @@ class PresetModelSettingsController(QObject):
         document = self.form.document()
         if document is not None and dialect == self.dialect and document["schema_id"] == suggested:
             return
+        same_dialect = dialect == self.dialect
         self.dialect = dialect
         identifier = self.service.default_id(dialect, suggested)
-        self._render(self.service.create(identifier))
+        updated = self.service.create(identifier)
+        if same_dialect and document is not None and "sparse_response" in document:
+            updated["sparse_response"] = document["sparse_response"]
+        self._render(updated)
 
     def import_definition(self):
         path, _filter = QFileDialog.getOpenFileName(self.form, _("Импорт JSON", "Import JSON"), "", "JSON (*.json)")

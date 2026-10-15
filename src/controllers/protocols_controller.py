@@ -162,6 +162,8 @@ class ProtocolsController(ProtocolBuilderService):
 
         reg = get_protocol_registry()
         proto = reg.get(protocol_id) if protocol_id else None
+        if protocol_id and proto is None:
+            raise ValueError(f"API protocol is unavailable: {protocol_id}")
         if not proto:
             proto = reg.pick_default()
 

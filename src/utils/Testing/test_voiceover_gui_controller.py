@@ -4,8 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
-
+from unittest.mock import Mock, patch
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
@@ -61,6 +60,26 @@ class _IndicatorButtonStub:
 
 
 class VoiceoverGuiControllerTests(unittest.TestCase):
+    def test_initialization_success_dialog_uses_current_language(self):
+        from localization import translate_for_language
+
+        for language, title, message in (
+            ("RU", "Успешно", "Модель edge_tts_rvc_cuda успешно инициализирована!"),
+            ("EN", "Success", "Model edge_tts_rvc_cuda initialized successfully!"),
+        ):
+            with self.subTest(language=language):
+                controller, bus = self._make_controller()
+                controller._loading_dialog = object()
+                controller._loading_model_id = "edge_tts_rvc_cuda"
+                controller._ui = lambda fn: fn()
+                controller._close_loading_dialog = lambda: None
+                controller._save_setting = lambda *_args: None
+                controller._sync_everything = lambda **_kwargs: None
+                controller._select_model_async = lambda _id, done, **_kwargs: done(True)
+                with patch("controllers.gui.voiceover_controller._", side_effect=lambda ru, en: translate_for_language(language, ru, en)):
+                    controller._on_finish_loading(Event(Events.Audio.FINISH_MODEL_LOADING, {"model_id": "edge_tts_rvc_cuda"}))
+                self.assertEqual(bus.emitted, [(Events.GUI.SHOW_INFO_MESSAGE, {"title": title, "message": message})])
+
     def _make_controller(self) -> tuple[VoiceoverGuiController, _EventBusStub]:
         bus = _EventBusStub()
         controller = VoiceoverGuiController.__new__(VoiceoverGuiController)
@@ -89,16 +108,40 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         self.assertEqual(payload.get("category"), "voice")
         self.assertEqual(payload.get("state"), "green")
 
+    def test_page_status_uses_snapshot_and_preserves_connection_when_voice_is_off(self):
+        controller, bus = self._make_controller()
+        page_status = []
+        connection_status = []
+        controller.view.voiceover_status = SimpleNamespace(
+            set_status=lambda *args: page_status.append(args)
+        )
+        controller.view.telegram_status = SimpleNamespace(
+            set_status=lambda *args: connection_status.append(args)
+        )
+        controller._emit_voice_icon_state_from_snapshot(
+            {"current_model_id": "high", "installed": True, "initialized": False}
+        )
+        assert page_status[-1][0] == "warn"
+        assert bus.emitted[-1][1]["tooltip"] == page_status[-1][1]
+        controller._effective_method = lambda: "TG"
+        controller._effective_use_voice = lambda: False
+        controller._tg_connected = True
+        controller._emit_voice_icon_state()
+        assert page_status[-1][0] is None
+        assert connection_status[-1][0] == "green"
+
     def test_tts_selector_reads_installed_models_from_canonical_catalog(self):
         controller, _bus = self._make_controller()
         catalog = SimpleNamespace(
             ready_item_ids=lambda category: (
-                "edge_tts_rvc_cuda",
-                "edge_tts_rvc_onnx",
-                "medium",
+                (
+                    "edge_tts_rvc_cuda",
+                    "edge_tts_rvc_onnx",
+                    "medium",
+                )
+                if category == "tts"
+                else ()
             )
-            if category == "tts"
-            else ()
         )
         registry = SimpleNamespace(
             get_optional=lambda _contract: catalog,
@@ -134,10 +177,120 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         )
         registry = SimpleNamespace(get_optional=lambda _contract: local_voice)
 
-        with patch("controllers.gui.voiceover_controller.services", return_value=registry):
-            controller._select_or_init_model_async("high")
+        with patch(
+            "controllers.gui.voiceover_controller.services", return_value=registry
+        ):
+            controller._prepare_local_model_async("high")
 
         self.assertEqual(calls, [("high", True)])
+
+    def _prepare_model_selection_controller(self):
+        controller, _ = self._make_controller()
+        controller._model_id_to_name = {"high": "F5-TTS"}
+        controller._canonical_installed_model_ids = lambda: {"high"}
+        controller._set_combobox_by_model_id = Mock()
+        controller._sync_local_model_status_from_snapshot = Mock()
+        controller._emit_voice_icon_state_from_snapshot = Mock()
+        controller._run_async = lambda worker, apply, **kwargs: apply(worker())
+        controller._begin_model_loading = Mock(return_value=True)
+        controller._initialize_local_model = Mock()
+        return controller
+
+    def test_selecting_cold_model_does_not_initialize_or_open_loading_dialog(self):
+        controller = self._prepare_model_selection_controller()
+        local_voice = SimpleNamespace(
+            check_initialized=Mock(return_value=False), select_model=Mock()
+        )
+        registry = SimpleNamespace(get_optional=lambda contract: local_voice)
+        with patch(
+            "controllers.gui.voiceover_controller.services", return_value=registry
+        ):
+            controller._prepare_local_model_async("high")
+        controller._begin_model_loading.assert_not_called()
+        controller._initialize_local_model.assert_not_called()
+        local_voice.select_model.assert_not_called()
+        self.assertFalse(
+            controller._sync_local_model_status_from_snapshot.call_args.args[0][
+                "initialized"
+            ]
+        )
+
+    def test_explicit_initialization_starts_loading_cold_model(self):
+        controller = self._prepare_model_selection_controller()
+        local_voice = SimpleNamespace(
+            check_initialized=Mock(return_value=False), select_model=Mock()
+        )
+        registry = SimpleNamespace(get_optional=lambda contract: local_voice)
+        with patch(
+            "controllers.gui.voiceover_controller.services", return_value=registry
+        ):
+            controller._prepare_local_model_async("high", initialize=True)
+        controller._begin_model_loading.assert_called_once_with("high")
+        controller._initialize_local_model.assert_called_once_with("high")
+
+    def test_selecting_ready_model_reuses_it_without_initialization(self):
+        controller = self._prepare_model_selection_controller()
+        local_voice = SimpleNamespace(
+            check_initialized=Mock(return_value=True),
+            select_model=Mock(return_value=True),
+        )
+        registry = SimpleNamespace(get_optional=lambda contract: local_voice)
+        with patch(
+            "controllers.gui.voiceover_controller.services", return_value=registry
+        ):
+            controller._prepare_local_model_async("high")
+        local_voice.select_model.assert_called_once_with("high")
+        controller._initialize_local_model.assert_not_called()
+
+    def test_select_and_initialize_events_keep_distinct_intent(self):
+        controller, _ = self._make_controller()
+        controller._ui = lambda callback: callback()
+        controller._backend_enabled = lambda: True
+        controller._save_setting = Mock()
+        controller._set_combobox_by_model_id = Mock()
+        controller._prepare_local_model_async = Mock()
+        controller._on_model_selected(
+            Event(Events.GUI.VOICEOVER_MODEL_SELECTED, {"model_id": "high"})
+        )
+        controller._prepare_local_model_async.assert_called_once_with(
+            "high", initialize=False
+        )
+        controller._prepare_local_model_async.reset_mock()
+        controller._on_model_initialize(
+            Event(Events.GUI.VOICEOVER_MODEL_INITIALIZE, {"model_id": "high"})
+        )
+        controller._prepare_local_model_async.assert_called_once_with(
+            "high", initialize=True
+        )
+
+    def test_model_combo_and_initialize_button_publish_distinct_events(self):
+        from controllers.gui.voiceover_settings_logic import (
+            wire_voiceover_settings_logic,
+        )
+
+        bus = _EventBusStub()
+        view = SimpleNamespace(
+            settings={"VOICEOVER_METHOD": "API"},
+            local_voice_combobox=SimpleNamespace(
+                activated=Mock(), currentData=lambda: "high"
+            ),
+            local_model_action_btn=SimpleNamespace(
+                clicked=Mock(), property=lambda key: "init"
+            ),
+        )
+        with patch(
+            "controllers.gui.voiceover_settings_logic.get_event_bus", return_value=bus
+        ), patch("controllers.gui.voiceover_settings_logic.QTimer.singleShot"):
+            wire_voiceover_settings_logic(view)
+            view._on_local_model_changed(0)
+            view._on_local_model_action()
+        self.assertEqual(
+            bus.emitted,
+            [
+                (Events.GUI.VOICEOVER_MODEL_SELECTED, {"model_id": "high"}),
+                (Events.GUI.VOICEOVER_MODEL_INITIALIZE, {"model_id": "high"}),
+            ],
+        )
 
     def test_tts_selector_keeps_every_ready_catalog_model_after_onnx_install(self):
         controller, _bus = self._make_controller()
@@ -206,7 +359,9 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         controller._ui = lambda callback: callback()
         controller._sync_everything = lambda **kwargs: calls.append(kwargs)
 
-        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value=False))
+        controller._on_setting_changed(
+            SimpleNamespace(key="USE_VOICEOVER", value=False)
+        )
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
@@ -217,7 +372,9 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         controller._ui = lambda callback: callback()
         controller._sync_everything = lambda **kwargs: calls.append(kwargs)
 
-        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value="false"))
+        controller._on_setting_changed(
+            SimpleNamespace(key="USE_VOICEOVER", value="false")
+        )
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
@@ -244,8 +401,12 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
             True if key == "LOCAL_VOICE_LOAD_LAST" else default
         )
         started: list[str] = []
-        controller._select_model_async = lambda model_id, show_error=False: started.append(model_id)
-        controller._begin_model_loading = lambda model_id, silent=False: started.append(model_id) or True
+        controller._select_model_async = (
+            lambda model_id, show_error=False: started.append(model_id)
+        )
+        controller._begin_model_loading = (
+            lambda model_id, silent=False: started.append(model_id) or True
+        )
         controller._emit_voice_icon_state_from_snapshot = lambda _state: None
         controller._initialize_local_model = lambda model_id: started.append(model_id)
 

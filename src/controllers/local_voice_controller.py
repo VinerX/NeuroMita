@@ -1,3 +1,4 @@
+from core.voice_failure import VoiceFailureCode, VoiceSynthesisError
 from core.error_utils import format_exception
 import os
 import uuid
@@ -99,6 +100,7 @@ class LocalVoiceController(LocalVoiceService):
             if initialize
             else None
         )
+        diagnostics: list[str] = []
         ok = await asyncio.to_thread(
             activate,
             "tts",
@@ -108,9 +110,14 @@ class LocalVoiceController(LocalVoiceService):
             validation_method=validation_method,
             validation_payload=validation_payload,
             validation_timeout=3600.0 if initialize else 20.0,
+            diagnostics=diagnostics,
         )
         if not ok:
-            raise RuntimeError(f"Failed to activate runtime environment for voice model '{model_id}'")
+            detail = "\n".join(dict.fromkeys(diagnostics))
+            raise RuntimeError(
+                f"Failed to activate runtime environment for voice model '{model_id}'"
+                + (f"\n\n{detail}" if detail else "")
+            )
 
     async def _engine_call_async(self, method: str, payload: Optional[dict] = None, timeout: Optional[float] = None):
         eng = self._get_engine()
@@ -445,9 +452,11 @@ class LocalVoiceController(LocalVoiceService):
 
         if not initialized:
             if not as_bool(self._get_setting("LOCAL_VOICE_INIT_ON_REQUEST", False)):
-                raise RuntimeError(
+                raise VoiceSynthesisError(
                     f"Local voice model '{model_id}' is not initialized. "
-                    "Initialize it explicitly in the voice model settings before synthesis."
+                    "Initialize it explicitly in the voice model settings before synthesis.",
+                    code=VoiceFailureCode.MODEL_NOT_INITIALIZED,
+                    model_id=model_id,
                 )
 
             # Cache проверяется повторно под lock: два первых запроса не должны

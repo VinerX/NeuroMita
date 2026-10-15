@@ -311,6 +311,42 @@ def test_directory_transaction_rejects_root_and_overlapping_state(tmp_path: Path
         )
 
 
+@pytest.mark.parametrize("persistent", [False, True])
+def test_locked_directory_rename_retries_and_preserves_old_install(tmp_path, monkeypatch, persistent):
+    target = tmp_path / "Unity"
+    target.mkdir()
+    (target / "old.txt").write_text("old", encoding="utf-8")
+    transaction = DirectoryInstallTransaction(
+        component="unity", target=target, state_root=tmp_path / "state",
+        lock_diagnostics=lambda _: "Possible owner: tester.exe PID 42",
+    )
+    transaction.begin({"version": "v1", "archive_url": "https://example/update.zip"})
+    _make_verified_tree(transaction.reset_stage(), "new")
+    transaction.mark_stage_ready(tree_sha256="unused")
+    replace = os.replace
+    attempts = []
+
+    def locked_replace(source, destination):
+        if Path(source) == target and Path(destination) == transaction.paths.backup:
+            attempts.append(source)
+            if persistent or len(attempts) < 3:
+                raise PermissionError("access denied")
+        replace(source, destination)
+
+    monkeypatch.setattr("services.update_transaction.os.replace", locked_replace)
+    monkeypatch.setattr("services.update_transaction.time.sleep", lambda _: None)
+    if persistent:
+        with pytest.raises(RuntimeError, match="tester.exe PID 42"):
+            transaction.commit(verify_install_manifest)
+        assert len(attempts) == 6
+        assert (target / "old.txt").read_text() == "old"
+        assert transaction.paths.stage.exists()
+    else:
+        transaction.commit(verify_install_manifest)
+        assert len(attempts) == 3
+        assert (target / "NeuroMita.exe").read_text() == "new"
+
+
 def test_directory_transaction_preserves_unowned_artifact_collision(tmp_path: Path) -> None:
     target = tmp_path / "Unity"
     target.mkdir()
@@ -486,6 +522,39 @@ def _unity_asset(base: Path, files: dict[str, bytes]) -> ReleaseAsset:
         size=archive.stat().st_size,
         digest=f"sha256:{digest}",
     )
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_unity_stops_before_copying_final_saves_and_replacing_install(tmp_path, monkeypatch, stop_fails):
+    target = tmp_path / "NeuroMita-Unity"
+    target.mkdir()
+    (target / "NeuroMita.exe").write_bytes(b"old")
+    asset = _unity_asset(tmp_path, {"Build/NeuroMita.exe": b"new"})
+    calls = []
+
+    def stop(installation, _log, **_kwargs):
+        assert installation == target
+        calls.append("stop")
+        assert (target / "NeuroMita.exe").read_bytes() == b"old"
+        if stop_fails:
+            raise RuntimeError("Unity still running PID 42")
+        (target / "user_data").mkdir()
+        (target / "user_data" / "save.json").write_text("final-save", encoding="utf-8")
+
+    monkeypatch.setattr("updater.stop_unity_for_update", stop)
+    result = _install_unity_asset(
+        base_path=tmp_path, unity_path=target, version="v1", asset=asset,
+        tester_code=None, logger=None, on_progress=None, on_extract_progress=None,
+        on_verify_progress=None, on_stage=None, stop_event=None,
+    )
+    assert calls == ["stop"]
+    if stop_fails:
+        assert not result.ok and "PID 42" in result.error
+        assert (target / "NeuroMita.exe").read_bytes() == b"old"
+    else:
+        assert result.ok
+        assert (target / "NeuroMita.exe").read_bytes() == b"new"
+        assert (target / "user_data" / "save.json").read_text() == "final-save"
 
 
 def test_unity_target_validation_rejects_parent_and_unowned_directory(tmp_path: Path) -> None:

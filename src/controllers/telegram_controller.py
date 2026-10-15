@@ -1,3 +1,4 @@
+from core.telegram_credentials import telegram_credentials_complete
 from core.error_utils import format_exception
 import asyncio
 import time
@@ -204,6 +205,15 @@ class TelegramController(TelegramService):
         if self._connecting:
             return False
 
+        if not telegram_credentials_complete(
+            {
+                "NM_TELEGRAM_API_ID": self.api_id,
+                "NM_TELEGRAM_API_HASH": self.api_hash,
+                "NM_TELEGRAM_PHONE": self.phone,
+            }
+        ):
+            return False
+
         snap = self._tg_settings_snapshot()
         if not force:
             if not snap.get("USE_VOICEOVER", False) or snap.get("VOICEOVER_METHOD") != "TG":
@@ -246,7 +256,13 @@ class TelegramController(TelegramService):
     async def start_silero(self):
         logger.info("Telegram Bot запускается!")
         try:
-            if not self.api_id or not self.api_hash or not self.phone:
+            if not telegram_credentials_complete(
+                {
+                    "NM_TELEGRAM_API_ID": self.api_id,
+                    "NM_TELEGRAM_API_HASH": self.api_hash,
+                    "NM_TELEGRAM_PHONE": self.phone,
+                }
+            ):
                 logger.info("Ошибка: отсутствуют необходимые данные для Telegram бота")
                 self._connecting = False
                 self.silero_connected = False
@@ -385,7 +401,6 @@ class TelegramController(TelegramService):
         }
         self._loop.call_soon_threadsafe(self._voice_queue.put_nowait, item)
         return await asyncio.wrap_future(result)
-
 
     async def _init_queue_and_start_worker(self):
         if self._voice_queue is None:

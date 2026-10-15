@@ -135,7 +135,7 @@ class LLMRequestRunner:
                 operation_cancellation=cancellation,
             )
             last_response = response
-            if response and response.text:
+            if response and not response.error_message and (response.text or response.tool_calls):
                 self.last_error = None
                 if stream_channel_holder[0] is not None:
                     stream_channel_holder[0].complete(response)
@@ -279,7 +279,7 @@ class LLMRequestRunner:
                     args=(req,),
                     timeout=request_timeout,
                     cancellation=cancellation,
-                    stream_policy=(StreamDeadlinePolicy.for_request(req) if req.stream else None),
+                    stream_policy=(StreamDeadlinePolicy.for_request(req) if req.wire_stream else None),
                     trace_id=trace_id,
                     attempt=attempt,
                     attempt_id=f"{chain_pos}:{attempt}",
@@ -288,7 +288,7 @@ class LLMRequestRunner:
                 )
                 if operation_cancellation is not None:
                     operation_cancellation.raise_if_cancelled()
-                if response and response.text:
+                if response and not response.error_message and (response.text or response.tool_calls):
                     finish_attempt(result="success", fallback=chain_pos > 1)
                     self.last_error = None
                     return response
@@ -333,9 +333,9 @@ class LLMRequestRunner:
                 attempt_error_type = "TimeoutError"
                 last_error_message = cancellation.reason or f"Attempt {attempt} timed out after {request_timeout}s."
                 retryable_before_response = bool(
-                    (req.stream and not cancellation.response_body_started)
+                    (req.wire_stream and not cancellation.response_body_started)
                     or (
-                        not req.stream
+                        not req.wire_stream
                         and not cancellation.response_headers_received
                     )
                 )
@@ -348,12 +348,12 @@ class LLMRequestRunner:
                     retryable=retryable_before_response,
                     code=(
                         "stream.timeout_before_body"
-                        if req.stream and retryable_before_response
+                        if req.wire_stream and retryable_before_response
                         else "request.timeout_before_response"
                         if retryable_before_response
                         else "timeout.attempt"
                     ),
-                    phase="stream" if req.stream else "request",
+                    phase="stream" if req.wire_stream else "request",
                     url=getattr(req, "api_url", None),
                 )
             except Exception as e:
@@ -368,7 +368,7 @@ class LLMRequestRunner:
                     url=getattr(req, "api_url", None),
                 )
 
-            if req.stream and cancellation.response_body_started and self.last_error is not None:
+            if req.wire_stream and cancellation.response_body_started and self.last_error is not None:
                 self._abort_chain = True
                 self.last_error.retryable = False
                 self.last_error.code = self.last_error.code or (

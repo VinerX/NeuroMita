@@ -201,7 +201,7 @@ class BeatService:
             result = await self._extract_uncached_async(audio_path, float(min_confidence))
             self._save_cached_result(audio_path, result, track_name=str(track_name or ""))
 
-        logger.info(
+        logger.debug(
             f"[BeatSync] extract_beats method={result.method} track='{_short_path(audio_path)}' "
             f"beats={len(result.beats)} elapsed={(time.perf_counter() - t0):.2f}s"
         )

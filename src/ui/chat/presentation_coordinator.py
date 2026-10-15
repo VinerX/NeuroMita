@@ -101,6 +101,7 @@ class ChatPresentationCoordinator:
         self._max_stable_messages = max(16, int(max_stable_messages))
         self._stable: OrderedDict[tuple[str, str], _StableLiveMessage] = OrderedDict()
         self._persisted_acks: OrderedDict[tuple[str, str], int] = OrderedDict()
+        self._deleted_messages: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._ephemeral: deque[tuple[int, ChatRenderCommand]] = deque(
             maxlen=max(16, int(max_ephemeral_events))
         )
@@ -118,40 +119,39 @@ class ChatPresentationCoordinator:
         return str(message_id or "").strip()
 
     @staticmethod
-    def _content_components(content: Any) -> tuple[tuple[str, str], ...]:
+    def _content_components(content: Any, role: str) -> tuple[tuple[str, str, str], ...]:
         if isinstance(content, str):
-            return (("text", content.strip()),)
+            return ((role, "text", content.strip()),)
         if isinstance(content, list):
-            visible: list[tuple[str, str]] = []
+            visible: list[tuple[str, str, str]] = []
             for item in content:
                 if not isinstance(item, dict):
-                    visible.append(("value", str(item)))
+                    visible.append((role, "value", str(item)))
                     continue
                 item_type = str(item.get("type") or "")
                 if item_type == "meta":
                     continue
                 if item_type == "text":
-                    visible.append(("text", str(item.get("text") or item.get("content") or "").strip()))
+                    visible.append((role, "text", str(item.get("text") or item.get("content") or "").strip()))
                 elif item_type == "image_url":
                     image_url = item.get("image_url")
                     url = image_url.get("url") if isinstance(image_url, dict) else ""
-                    visible.append(("image_url", str(url or "")))
+                    image_role = str(item.get("display_role") or role).strip().casefold()
+                    visible.append((image_role, "image_url", str(url or "")))
                 else:
-                    visible.append((item_type or "item", repr(sorted(item.items()))))
+                    visible.append((role, item_type or "item", repr(sorted(item.items()))))
             return tuple(visible)
-        return (("value", repr(content)),)
+        return ((role, "value", repr(content)),)
 
     @classmethod
     def _content_signature(cls, role: str, content: Any) -> tuple[Any, ...]:
         role_key = str(role or "").strip().casefold()
-        return (role_key, cls._content_components(content))
+        return (role_key, cls._content_components(content, role_key))
 
     @staticmethod
     def _signature_covers(snapshot_signature: tuple[Any, ...], live_signature: tuple[Any, ...]) -> bool:
         if not snapshot_signature or not live_signature:
             return snapshot_signature == live_signature
-        if snapshot_signature[0] != live_signature[0]:
-            return False
         snapshot_components = Counter(snapshot_signature[1])
         live_components = Counter(live_signature[1])
         return all(snapshot_components[component] >= count for component, count in live_components.items())
@@ -228,6 +228,8 @@ class ChatPresentationCoordinator:
             )
 
         key = (self._character_key(command.character_id), message_id)
+        if key in self._deleted_messages:
+            return False
         projected_signatures = self._history_projected.get(key)
         if projected_signatures and self._is_projected(projected_signatures, command):
             return False
@@ -325,6 +327,21 @@ class ChatPresentationCoordinator:
     def clear_failed(self, *, message_id: str, character_id: str) -> bool:
         return self.mark_failed(message_id=message_id, character_id=character_id, error="")
 
+    def is_message_deleted(self, *, message_id: str, character_id: str) -> bool:
+        return (self._character_key(character_id), self._message_key(message_id)) in self._deleted_messages
+
+    def forget_message(self, *, message_id: str, character_id: str) -> None:
+        key = (self._character_key(character_id), self._message_key(message_id))
+        if not key[1]:
+            return
+        self._deleted_messages[key] = None
+        self._deleted_messages.move_to_end(key)
+        while len(self._deleted_messages) > self._max_stable_messages * 2:
+            self._deleted_messages.popitem(last=False)
+        self._stable.pop(key, None)
+        self._persisted_acks.pop(key, None)
+        self._history_projected.pop(key, None)
+
     def begin_history_load(self, character_id: str) -> HistoryLoadTicket:
         ticket = HistoryLoadTicket(
             request_id=uuid.uuid4().hex,
@@ -345,6 +362,7 @@ class ChatPresentationCoordinator:
     def reset(self) -> None:
         self._stable.clear()
         self._persisted_acks.clear()
+        self._deleted_messages.clear()
         self._ephemeral.clear()
         self._history_projected.clear()
         self._active_history_load = None

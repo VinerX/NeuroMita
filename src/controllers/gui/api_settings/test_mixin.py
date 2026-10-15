@@ -1,15 +1,77 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QMenu
 
 from utils import _
+from presets.api_endpoints import resolve_api_url, resolve_test_url
+from presets.model_selection import normalize_catalog_models, select_catalog_model
+from core.networking.errors import valid_http_url
 from core.events import Events
 from ui.settings.api_settings.dialogs.models_loaded_dialog import ModelsLoadedDialog
+from services.provider_settings import describe_protocol, get_provider_account_status, list_provider_accounts
 
 
 class TestMixin:
-    def _test_connection(self) -> None:
+    def _set_account_status(self, protocol_id: str, status: dict) -> None:
+        self._account_status_protocol = protocol_id
+        self._account_status = dict(status)
+        self._account_status_serial = getattr(self, '_account_status_serial', 0) + 1
+
+    def _can_load_account_models(self, protocol_id: str) -> bool:
+        if getattr(self, '_account_status_protocol', None) != protocol_id:
+            return False
+        status = getattr(self, '_account_status', {})
+        return bool(status.get('signed_in') and status.get('plan_usage_enabled', False))
+
+    def _ensure_account_status(self, protocol_id: str) -> None:
+        if getattr(self, '_account_status_protocol', None) == protocol_id:
+            return
+        self._set_account_status(protocol_id, {})
+        serial = self._account_status_serial
+
+        def apply(status):
+            if serial != self._account_status_serial or protocol_id != self._current_protocol_id_ui():
+                return
+            self._set_account_status(protocol_id, status)
+            self._apply_provider_ui(protocol_id)
+
+        self._bus_call_async(lambda: get_provider_account_status(protocol_id), apply,
+                             lambda _exc: apply({}), name='provider-account-status')
+
+    def _load_account_models(self) -> None:
+        self._test_connection(action='list_models')
+
+    def _show_accounts(self) -> None:
+        protocol_id = self._current_protocol_id_ui()
+
+        def show(accounts):
+            if protocol_id != self._current_protocol_id_ui():
+                return
+            menu = QMenu(self.view)
+            for account in accounts:
+                item = menu.addAction(str(account['label']))
+                item.setCheckable(True)
+                item.setChecked(bool(account['active']))
+                item.triggered.connect(lambda _checked=False, aid=account['id']:
+                    self._test_connection(action='select_account', account_id=aid))
+            menu.addSeparator()
+            menu.addAction(_("Добавить аккаунт", "Add account"), lambda: self._test_connection(action='add_account'))
+            refresh = menu.addAction(_("Обновить список моделей", "Refresh models"), lambda: self._test_connection(action='list_models'))
+            refresh.setEnabled(self._can_load_account_models(protocol_id) and not bool(self.view.test_button.property('apiTesting')))
+            menu.addAction(_("Выйти", "Sign out"), lambda: self._test_connection(action='sign_out'))
+            button = self.view.account_button
+            menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+        self._bus_call_async(lambda: list_provider_accounts(protocol_id), show,
+            lambda exc: QMessageBox.warning(self.view, _("Аккаунты", "Accounts"), str(exc)), name='provider-accounts')
+
+    def _test_connection(self, *, action: str = '', account_id: str = '') -> None:
         v = self.view
+        if v.test_button.property('apiTesting'):
+            return
+        protocol_id = self._current_protocol_id_ui()
+        if action == 'list_models' and not self._can_load_account_models(protocol_id):
+            return
         base_id = v.template_combo.currentData()
         try:
             base_id = int(base_id) if base_id is not None else None
@@ -24,15 +86,41 @@ class TestMixin:
             )
             return
 
+        test_url = resolve_test_url(
+            self._active_template or {}, v.api_url_row.text(), v.api_test_url_row.text()
+        )
+        descriptor = describe_protocol(self._current_protocol_id_ui())
+        if descriptor.connection_action == 'test_connection' and not valid_http_url(test_url):
+            QMessageBox.warning(
+                v,
+                _("Некорректный URL проверки", "Invalid test URL"),
+                _(
+                    "Укажите корректный HTTP или HTTPS URL с адресом сервера.",
+                    "Enter a valid HTTP or HTTPS URL with a server address.",
+                ),
+            )
+            v.api_test_url_row.edit.setFocus()
+            return
         v.test_button.setEnabled(False)
         v.test_button.setProperty("apiTesting", True)
         v.test_button.setText(_("Проверка…", "Checking…"))
+        self._apply_provider_ui(self._current_protocol_id_ui())
 
-        self.event_bus.emit(Events.ApiPresets.TEST_CONNECTION, {
-            "id": self.current_preset_id,
-            "base": base_id,
-            "key": v.api_key_row.text(),
-        })
+        self.event_bus.emit(
+            Events.ApiPresets.TEST_CONNECTION,
+            {
+                "id": self.current_preset_id,
+                "base": base_id,
+                "key": v.api_key_row.text(),
+                "url": resolve_api_url(
+                    self._active_template or {}, v.api_url_row.text()
+                ),
+                "test_url": v.api_test_url_row.text().strip(),
+                "protocol_id": self._current_protocol_id_ui(),
+                'action': action or descriptor.connection_action,
+                'account_id': account_id,
+            },
+        )
 
     def _on_test_result(self, event):
         data = event.data or {}
@@ -48,11 +136,20 @@ class TestMixin:
 
     def _process_test_result(self, data: dict):
         v = self.view
+        account = data.get('account')
+        if isinstance(account, dict):
+            self._set_account_status(self._current_protocol_id_ui(), account)
         v.test_button.setEnabled(True)
         v.test_button.setProperty("apiTesting", False)
         v.test_button.setText(_("Проверить", "Check"))
+        self._apply_help_links(getattr(self, "_last_help_preset", {}) or {})
+        self._apply_provider_ui(self._current_protocol_id_ui())
 
         success = bool(data.get("success"))
+        if success and data.get('show_plan_usage_notice'):
+            QMessageBox.information(v, _("Вы используете план ChatGPT", "You're using your ChatGPT plan"), _(
+                'Запросы этого провайдера расходуют вашу квоту ChatGPT/Codex. Управлять использованием можно в настройках ChatGPT.',
+                'Requests from this provider use your ChatGPT/Codex allowance. Manage usage in ChatGPT settings.'))
         msg = str(data.get("message") or (_("Успешно", "Success") if success else _("Неизвестная ошибка", "Unknown error")))
         models = data.get("models") or []
         model_infos = data.get("model_infos") or []
@@ -61,21 +158,20 @@ class TestMixin:
         if not isinstance(model_infos, list):
             model_infos = []
 
-        # нормализуем список
-        cleaned: list[str] = []
-        seen = set()
-        for m in models:
-            s = str(m or "").strip()
-            if s and s not in seen:
-                seen.add(s)
-                cleaned.append(s)
+        cleaned = normalize_catalog_models(models)
+        if success and 'models' in data:
+            self.current_preset_data['known_models'] = list(cleaned)
+            self._set_model_suggestions(cleaned)
 
         if success and cleaned:
-            try:
-                v.api_model_list_model.setStringList(cleaned)
-            except Exception:
-                pass
-
+            preset = getattr(self, 'current_preset_data', None) or {}
+            preferred = str(preset.get('preferred_model', (self._active_template or {}).get('preferred_model', '')) or '')
+            if preferred or describe_protocol(self._current_protocol_id_ui()).account_actions:
+                current = v.api_model_row.text().strip()
+                selected = select_catalog_model(current, cleaned, preferred)
+                if selected != current:
+                    v.api_model_row.set_text(selected)
+                    self._on_field_changed()
             try:
                 dlg = ModelsLoadedDialog(v, models=cleaned, model_infos=model_infos, message=msg)
                 if dlg.exec() == dlg.DialogCode.Accepted:
@@ -98,8 +194,16 @@ class TestMixin:
 
     def _process_test_failed(self, data: dict):
         v = self.view
+        self._set_account_status('', {})
         v.test_button.setEnabled(True)
         v.test_button.setProperty("apiTesting", False)
         v.test_button.setText(_("Проверить", "Check"))
+        self._apply_help_links(getattr(self, "_last_help_preset", {}) or {})
+        self._apply_provider_ui(self._current_protocol_id_ui())
         msg = str(data.get("message") or _("Неизвестная ошибка", "Unknown error"))
-        QMessageBox.warning(v, _("Ошибка тестирования", "Test Error"), msg)
+        if data.get("error") == "no_test_url":
+            QMessageBox.information(
+                v, _("Проверка не настроена", "Check not configured"), msg
+            )
+        else:
+            QMessageBox.warning(v, _("Ошибка тестирования", "Test Error"), msg)
