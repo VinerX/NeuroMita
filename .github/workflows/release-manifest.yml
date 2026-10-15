@@ -11,8 +11,8 @@ on:
       - prereleased
       - released
       - unpublished
-  schedule:
-    - cron: '17 * * * *'
+  #schedule:
+    #- cron: '17 * * * *'
 
 permissions:
   contents: write
