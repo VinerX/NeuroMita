@@ -12,6 +12,7 @@ from PyQt6.QtGui import QDesktopServices
 from main_logger import logger
 from core.networking import shared_http_client_registry
 from services.release_catalog import discover_release_catalog
+from services.release_revisions import release_news_entries
 from utils.release_assets import raw_release_has_launcher_assets
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem
 from utils import _
@@ -126,7 +127,7 @@ def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
             allow_api_fallback=True,
         )
         data = [
-            item for item in catalog.releases
+            item for item in release_news_entries(catalog.releases)
             if raw_release_has_launcher_assets(item)
         ]
         logger.info(

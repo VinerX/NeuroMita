@@ -1139,6 +1139,7 @@ def get_python_update_info(
         "channel": channel,
         "current_version": local_version,
         "latest_version": remote_tag,
+        "release_tag": release.release_tag or remote_tag,
         "available": available,
         "prerelease": bool(release.prerelease),
         "name": str(release.name or ""),
