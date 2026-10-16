@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class _Subscription:
@@ -37,9 +37,12 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
             GameLinkService,
             InstallableCatalogService,
             ProtocolBuilderService,
+            RemoteVoiceService,
             SettingsService,
         )
         from ui.pages.main_page_registry import MAIN_PAGE_ORDER
+        from core.remote_voice import RemoteVoiceConfiguration, RemoteVoicePreset, RemoteVoiceStatus
+        from presets.remote_voice_templates import REMOTE_VOICE_TEMPLATES
 
         class Settings(SettingsService):
             def __init__(self) -> None:
@@ -201,6 +204,15 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
         registry.register(InstallableCatalogService, Catalog())
         registry.register(CharacterRegistry, Characters())
         registry.register(GameLinkService, GameLink())
+        remote_voice = Mock(spec=RemoteVoiceService)
+        remote_voice.templates.return_value = REMOTE_VOICE_TEMPLATES
+        remote_voice.configuration.return_value = RemoteVoiceConfiguration(
+            active_id="test", presets=(RemoteVoicePreset(id="test", name="Test voice"),),
+        )
+        remote_voice.status.return_value = RemoteVoiceStatus(
+            configured=False, verified=False, provider_name="Fish Audio", model="s2.1-pro-free",
+        )
+        registry.register(RemoteVoiceService, remote_voice)
 
         root = None
         hosts: list[QWidget] = []

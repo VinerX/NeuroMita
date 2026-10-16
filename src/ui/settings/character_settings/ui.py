@@ -495,7 +495,8 @@ def _build_danger_zone(self) -> QWidget:
     return section
 
 
-def build_character_settings_ui(self, parent_layout):
+def build_character_settings_ui(self, parent_layout, *, view_model):
+    self.character_settings_view_model = view_model
     container = CharacterWorkspace()
     container.setObjectName("CharacterSettingsWorkspace")
     container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -567,10 +568,10 @@ def build_character_settings_ui(self, parent_layout):
     text.addWidget(self.character_id_label)
     header.addLayout(text, 1)
     right.addLayout(header)
-    self._char_config_panel = _build_char_config_panel(self, 150)
+    self.character_config_panel = _build_char_config_panel(self, 150)
     scroll, content_layout = tab_page()
     content_layout.setContentsMargins(0, 0, 0, 0)
-    content_layout.addWidget(self._char_config_panel, 1)
+    content_layout.addWidget(self.character_config_panel, 1)
     right.addWidget(scroll, 1)
     splitter.addWidget(detail)
     container.sections = [(self.character_prompt_section, True),

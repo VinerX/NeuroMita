@@ -21,7 +21,8 @@ class CharacterStateViewModel(IntentViewModel[CharacterStatePanelState]):
         bus = get_event_bus()
         for event_name in (
             Events.Character.CURRENT_CHANGED,
-            Events.Character.RELOAD_DATA,
+            Events.Character.DATA_RELOADED,
+            Events.Character.HISTORY_CLEARED,
             Events.Model.ON_SUCCESSFUL_RESPONSE,
         ):
             self.track_subscription(
@@ -46,7 +47,8 @@ class CharacterStateViewModel(IntentViewModel[CharacterStatePanelState]):
     def _on_refresh_event(self, event: Any) -> None:
         rebuild = getattr(event, "name", "") in {
             Events.Character.CURRENT_CHANGED,
-            Events.Character.RELOAD_DATA,
+            Events.Character.DATA_RELOADED,
+            Events.Character.HISTORY_CLEARED,
         }
         self._post_ui(lambda: self.refresh(rebuild=rebuild))
 

@@ -18,12 +18,14 @@ if str(_SRC_DIR) not in sys.path:
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from controllers.gui import character_settings_logic as csl
+from controllers.gui.character_settings_view_model import CharacterSettingsViewModel
 
 
 class _Gui:
-    # Как настроено в реальном окне: в настройках выбрана одна Мита...
-    _configured_char_id = "KindMita"
-    _active_character_id = "KindMita"
+    def __init__(self):
+        self.character_settings_view_model = CharacterSettingsViewModel(
+            selected_character_id="KindMita", active_character_id="KindMita",
+        )
 
 
 class OpenDbViewerCharacterFilterTests(unittest.TestCase):

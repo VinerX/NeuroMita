@@ -55,7 +55,8 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
         ))
         for event_name in (
             Events.Character.CURRENT_CHANGED,
-            Events.Character.RELOAD_DATA,
+            Events.Character.DATA_RELOADED,
+            Events.Character.HISTORY_CLEARED,
             Events.ApiPresets.PRESET_SAVED,
             Events.ApiPresets.PRESET_DELETED,
             Events.ApiPresets.PRESET_IMPORTED,
@@ -205,12 +206,12 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
 
     def _open_history(self, character_id: str) -> None:
         cid = str(character_id or self.state.character_id).strip()
+        if not cid:
+            return
         try:
-            if cid:
-                self._bus.emit(Events.Character.SET_CURRENT, {"character_id": cid})
             from controllers.gui.character_settings_logic import open_db_viewer
 
-            open_db_viewer(self._host, character_id=cid or None)
+            open_db_viewer(self._host, character_id=cid)
         except Exception as exc:
             self.emit_effect(ChatShowError("History", format_exception(exc)))
 
