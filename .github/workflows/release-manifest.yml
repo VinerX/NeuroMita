@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Checkout repository tooling
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.repository == 'Atm4x/NeuroMita' && 'releases' || github.event.repository.default_branch }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
