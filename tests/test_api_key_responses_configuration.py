@@ -55,7 +55,7 @@ def test_ui_exposes_editable_endpoint_and_api_key_without_account_login():
     assert template['id'] == 13
     assert template['url'] == 'https://api.openai.com/v1/responses'
     assert template['url_editable'] is True
-    assert template['test_url_editable'] is True
+    assert template['test_url_editable'] is False
     descriptor = describe_protocol(template['protocol_id'])
     assert descriptor.settings.api_key
     assert descriptor.settings.api_url

@@ -28,7 +28,6 @@ from ui.pages.sandbox_presentation import (
     SandboxActivated,
     SandboxCharacterSelected,
     SandboxClearHistoryRequested,
-    SandboxHistoryCleared,
     SandboxModelSelected,
     SandboxOpenHistory,
     SandboxOpenHistoryRequested,
@@ -740,12 +739,6 @@ class SandboxPage(QWidget):
             self._refresh_debug_summary()
 
     def _handle_effect(self, effect) -> None:
-        if isinstance(effect, SandboxHistoryCleared):
-            try:
-                self._chat_panel_actions.clear_chat()
-            except Exception:
-                logger.debug("Failed to clear Sandbox chat display", exc_info=True)
-            return
         if isinstance(effect, SandboxOpenHistory):
             return
         if isinstance(effect, SandboxShowError):
@@ -2229,7 +2222,7 @@ class SandboxPage(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self._view_model.dispatch(SandboxClearHistoryRequested())
+        self._view_model.dispatch(SandboxClearHistoryRequested(char_id))
 
     def _build_inspector_state_tab(self) -> QWidget:
         page, layout = self._make_tab_page()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
+from services.release_revisions import project_python_revision
 
 
 MANIFEST_SCHEMA = 1
@@ -72,7 +73,7 @@ def _release_entry(release: Mapping[str, Any]) -> dict[str, Any] | None:
         asset = _asset_entry(raw_asset)
         if asset is not None:
             assets.append(asset)
-    return {
+    entry = {
         "tag_name": tag,
         "name": str(release.get("name") or tag),
         "body": str(release.get("body") or ""),
@@ -83,6 +84,10 @@ def _release_entry(release: Mapping[str, Any]) -> dict[str, Any] | None:
         "html_url": str(release.get("html_url") or ""),
         "assets": assets,
     }
+    for key in ("release_tag", "build_version", "component"):
+        if release.get(key):
+            entry[key] = str(release[key])
+    return entry
 
 
 def _published_key(release: Mapping[str, Any]) -> str:
@@ -101,11 +106,12 @@ def build_release_manifest(
     for raw_release in releases:
         entry = _release_entry(raw_release)
         if entry is not None:
-            entries.append(entry)
+            entries.extend(project_python_revision(entry))
     entries.sort(key=_published_key, reverse=True)
 
     known_tags = {entry["tag_name"] for entry in entries}
     stable = str(stable_tag or "").strip()
+    stable = next((entry["tag_name"] for entry in entries if entry.get("release_tag") == stable), stable)
     if stable not in known_tags:
         stable = next(
             (entry["tag_name"] for entry in entries if not entry["prerelease"]),
@@ -152,7 +158,7 @@ def parse_release_manifest(
             if raw_release.get("draft"):
                 continue
             raise ReleaseCatalogError(f"Release manifest entry {index} has no tag")
-        releases.append(entry)
+        releases.extend(project_python_revision(entry))
     releases.sort(key=_published_key, reverse=True)
     return releases
 
@@ -210,7 +216,7 @@ def discover_release_catalog(
                     continue
                 entry = _release_entry(raw_release)
                 if entry is not None:
-                    releases.append(entry)
+                    releases.extend(project_python_revision(entry))
             releases.sort(key=_published_key, reverse=True)
             return ReleaseCatalog(repo, releases, "github-api")
         except Exception as error:

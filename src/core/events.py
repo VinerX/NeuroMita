@@ -35,6 +35,12 @@ _ORDERED_EVENT_NAMES = _ASR_ORDERED_EVENT_NAMES | frozenset(
 
 _COMMAND_EVENT_NAMES = frozenset(
     {
+        "character_set_current",
+        "character_reload_data",
+        "character_reload_all_data",
+        "character_reload_prompts",
+        "character_clear_history",
+        "character_clear_all_histories",
         "installable_install",
         "installable_uninstall",
         "installable_initialize",
@@ -879,11 +885,14 @@ class Events:
     class Character:
         SET_CURRENT = "character_set_current"
         RELOAD_DATA = "character_reload_data"
+        RELOAD_ALL_DATA = "character_reload_all_data"
         RELOAD_PROMPTS = "character_reload_prompts"
         CLEAR_HISTORY = "character_clear_history"
         CLEAR_ALL_HISTORIES = "character_clear_all_histories"
 
         CURRENT_CHANGED = "character_current_changed"
+        DATA_RELOADED = "character_data_reloaded"
+        HISTORY_CLEARED = "character_history_cleared"
 
     class Protocols:
         GET_PROTOCOL_LIST = "get_protocol_list"

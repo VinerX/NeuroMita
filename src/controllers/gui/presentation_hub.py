@@ -173,10 +173,14 @@ class _SettingsSectionsController:
             return
         if key == "characters":
             from ui.settings.character_settings import setup_mita_controls
+            from controllers.gui.character_settings_view_model import CharacterSettingsViewModel
 
+            owner = self._section_owner(gui, parent)
+            view_model = self._own_view_model(CharacterSettingsViewModel(), owner)
             setup_mita_controls(
                 gui,
                 parent,
+                view_model=view_model,
                 wire_characters=self.wire_characters,
             )
             return

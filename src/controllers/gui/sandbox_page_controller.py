@@ -52,18 +52,22 @@ class SandboxPageController:
         cid = str(character_id or "").strip()
         if not cid:
             return
-        self._bus.emit(Events.Character.SET_CURRENT, {"character_id": cid})
-        if reload_data:
-            self._bus.emit(Events.Character.RELOAD_DATA)
+        self._bus.emit(Events.Character.SET_CURRENT, {
+            "character_id": cid, "reload_data": bool(reload_data),
+        })
 
-    def clear_current_history(self) -> None:
-        self._bus.emit(Events.Character.CLEAR_HISTORY)
+    def clear_history(self, character_id: str) -> None:
+        cid = str(character_id or "").strip()
+        if cid:
+            self._bus.emit(Events.Character.CLEAR_HISTORY, {"character_id": cid})
 
     def open_history(self, host: Any, character_id: str) -> None:
-        self.select_character(character_id, reload_data=False)
+        cid = str(character_id or "").strip()
+        if not cid:
+            return
         from controllers.gui.character_settings_logic import open_db_viewer
 
-        open_db_viewer(host, character_id=str(character_id or "").strip() or None)
+        open_db_viewer(host, character_id=cid)
 
     def settings_snapshot(self, keys: Iterable[str] | None = None) -> dict[str, Any]:
         return dict(self._settings().snapshot(keys) or {})
@@ -125,7 +129,7 @@ class SandboxPageController:
         return ""
 
     def prompt_snapshot(self, character_id: str) -> tuple[str, list[str], str]:
-        cid = str(character_id or self.current_character_id()).strip()
+        cid = str(character_id or "").strip()
         try:
             options = [str(item) for item in (list_prompt_sets("Prompts", cid) or [])]
         except Exception:
@@ -137,13 +141,13 @@ class SandboxPageController:
         return cid, options, current
 
     def select_prompt(self, character_id: str, prompt_set: str) -> None:
-        cid = str(character_id or self.current_character_id()).strip()
+        cid = str(character_id or "").strip()
         if not cid:
             return
         settings = self._settings()
         settings.update(f"PROMPT_SET_{cid}", str(prompt_set))
         settings.save_settings()
-        self._bus.emit(Events.Character.RELOAD_DATA)
+        self._bus.emit(Events.Character.RELOAD_DATA, {"character_id": cid})
 
     def refresh_voice_panels(self) -> None:
         self._bus.emit(Events.GUI.VOICEOVER_REFRESH)

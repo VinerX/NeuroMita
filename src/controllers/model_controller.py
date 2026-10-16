@@ -280,8 +280,6 @@ class ModelController(GenerationService, ModelStateService):
                     Events.Character.SET_CURRENT,
                     {"character_id": str(value or "")},
                 )
-            if getattr(self, "model", None) is not None:
-                self._refresh_chat_model_character_refs()
             return
 
         model = getattr(self, "model", None)
@@ -2813,9 +2811,7 @@ class ModelController(GenerationService, ModelStateService):
             success = PromptDownloader().download_and_replace_prompts()
 
             if success:
-                cid = self._get_current_character_id()
-                if cid:
-                    self.event_bus.emit(Events.Character.RELOAD_PROMPTS, {"character_id": cid})
+                self.event_bus.emit(Events.Character.RELOAD_ALL_DATA)
                 self.event_bus.emit("reload_prompts_success")
             else:
                 self.event_bus.emit("reload_prompts_failed", {"error": "Download failed"})

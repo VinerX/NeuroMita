@@ -575,6 +575,8 @@ class GuiThreadAffinityTests(unittest.TestCase):
                 self.asr_input_mode_combobox = QComboBox(self)
                 self.asr_input_mode_combobox.addItem("VAD", "vad")
                 self.asr_input_mode_combobox.addItem("PTT", "ptt")
+                self.asr_language_combobox = QComboBox(self)
+                self.asr_language_hint = QLabel(self)
                 self.vad_apply_button = QPushButton(self)
                 self.vad_reset_button = QPushButton(self)
                 self.vad_sample_rate_spinbox = QSpinBox(self)

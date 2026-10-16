@@ -105,9 +105,7 @@ class IntentMvvmContractTests(unittest.TestCase):
         для ещё не мигрированных зафиксирован текущий счётчик нарушений —
         уменьшать можно, расти нельзя. Домигрировал файл — убери его из списка.
         """
-        allowed_counts = {
-            "character_settings_logic.py": 8,
-        }
+        allowed_counts: dict[str, int] = {}
         controllers_root = _SRC_ROOT / "controllers" / "gui"
         actual_counts: dict[str, int] = {}
 
