@@ -101,7 +101,7 @@ class SandboxSettingChanged(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class SandboxClearHistoryRequested(UiIntent):
-    pass
+    character_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,11 +111,6 @@ class SandboxOpenHistoryRequested(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class SandboxRefreshVoicePanelsRequested(UiIntent):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxHistoryCleared(UiEffect):
     pass
 
 

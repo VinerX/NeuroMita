@@ -120,6 +120,7 @@ def _make_controller(settings: dict | None = None) -> HistoryController:
     controller._compression_cooldowns = {}
     controller._messages_since_last_maintenance = {}
     controller._maintenance_inflight = set()
+    controller._action_memory_cap_warnings = set()
     controller._closed = False
     cfg = dict(settings or {})
     controller._get_setting = lambda key, default=None: cfg.get(key, default)
@@ -368,6 +369,7 @@ class HistoryResetHookTests(unittest.TestCase):
         controller._background_compression_timers["TestChar"] = timer
         controller._compression_cooldowns["TestChar"] = 123.0
         controller._messages_since_last_periodic_compression["TestChar"] = 5
+        controller._action_memory_cap_warnings.update({"TestChar", "OtherChar"})
 
         controller.on_history_reset("TestChar")
 
@@ -375,6 +377,7 @@ class HistoryResetHookTests(unittest.TestCase):
         self.assertNotIn("TestChar", controller._background_compression_timers)
         self.assertNotIn("TestChar", controller._compression_cooldowns)
         self.assertNotIn("TestChar", controller._messages_since_last_periodic_compression)
+        self.assertEqual(controller._action_memory_cap_warnings, {"OtherChar"})
 
 
 if __name__ == "__main__":

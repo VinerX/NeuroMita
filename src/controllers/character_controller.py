@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
 from core.events import get_event_bus, Events, Event
 from core.services import services
 from main_logger import logger
@@ -37,6 +35,7 @@ class CharacterController:
         eb.subscribe(Events.Character.SET_CURRENT, self._on_set_current, weak=False)
 
         eb.subscribe(Events.Character.RELOAD_DATA, self._on_reload_data, weak=False)
+        eb.subscribe(Events.Character.RELOAD_ALL_DATA, self._on_reload_all_data, weak=False)
         eb.subscribe(Events.Character.RELOAD_PROMPTS, self._on_reload_prompts, weak=False)
 
         eb.subscribe(Events.Character.CLEAR_HISTORY, self._on_clear_history, weak=False)
@@ -52,7 +51,7 @@ class CharacterController:
 
     def _on_set_current(self, event: Event):
         data = event.data or {}
-        character_id = data.get("character_id")
+        character_id = str(data.get("character_id") or "").strip()
         if not character_id:
             return False
 
@@ -60,6 +59,11 @@ class CharacterController:
         self.character_manager.set_character_to_change(str(character_id))
         self.character_manager.check_change_current_character()
         after = getattr(self.character_manager.current_character, "char_id", None)
+        if after != character_id:
+            return False
+
+        if before == after and data.get("reload_data", False):
+            self._on_reload_data(Event(Events.Character.RELOAD_DATA, {"character_id": after}))
 
         if before != after:
             ch = self.character_manager.current_character
@@ -69,29 +73,43 @@ class CharacterController:
             })
         return True
 
+    def _character_for_event(self, event: Event):
+        data = event.data or {}
+        if "character_id" in data:
+            return self.get_ref(str(data.get("character_id") or "").strip())
+        return self.get_current_ref()
+
     def _on_reload_data(self, event: Event):
-        ch = self.get_current_ref()
+        ch = self._character_for_event(event)
         if ch and hasattr(ch, "reload_character_data"):
             ch.reload_character_data()
+            self.event_bus.emit(Events.Character.DATA_RELOADED, {"character_id": ch.char_id})
             return True
         return False
+
+    def _on_reload_all_data(self, event: Event):
+        success = True
+        for ch in self.character_manager.get_loaded_characters():
+            try:
+                ch.reload_character_data()
+                self.event_bus.emit(Events.Character.DATA_RELOADED, {"character_id": ch.char_id})
+            except Exception:
+                success = False
+                logger.exception("Failed to reload character %s", ch.char_id)
+        return success
 
     def _on_reload_prompts(self, event: Event):
-        data = event.data or {}
-        character_id = data.get("character_id")
-        ch = self.get_ref(str(character_id)) if character_id else self.get_current_ref()
-        if ch and hasattr(ch, "reload_prompts"):
-            ch.reload_prompts()
-            return True
-        return False
+        return self._on_reload_data(event)
 
     def _on_clear_history(self, event: Event):
-        ch = self.get_current_ref()
+        ch = self._character_for_event(event)
         if ch and hasattr(ch, "clear_history"):
             ch.clear_history()
+            self.event_bus.emit(Events.Character.HISTORY_CLEARED, {"character_id": ch.char_id})
             return True
         return False
 
     def _on_clear_all_histories(self, event: Event):
         self.character_manager.clear_all_histories()
+        self.event_bus.emit(Events.Character.HISTORY_CLEARED, {"all_characters": True})
         return True

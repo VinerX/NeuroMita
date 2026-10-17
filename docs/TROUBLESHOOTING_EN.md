@@ -59,6 +59,41 @@ If the app still shows Unity as not installed, check that the selected folder is
 
 Installation verifies the archive and can recover after an interruption. If the operation repeats after a restart, wait for it to finish or attach the log instead of deleting temporary service folders manually.
 
+## The TV module does not install in Unity
+
+If YouTube does not work and the technical details contain `Both yt-dlp installation methods failed`, `yt-dlp archive download failed`, `yt-dlp release metadata failed`, or `Request timeout` while installing yt-dlp, try installing the required file manually.
+
+1. Fully close NeuroMita.
+2. Download **[yt-dlp.exe version 2026.10.10.233141](https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/download/2026.10.10.233141/yt-dlp.exe)** from the official repository. If the direct link does not open, visit **[this release page](https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/tag/2026.10.10.233141)** and select `yt-dlp.exe` under **Assets**.
+3. Press **Win + R**, paste the following path, and press Enter:
+
+   ```text
+   %USERPROFILE%\AppData\LocalLow\NeuroMita Devs\NeuroMita
+   ```
+
+4. Open `TVBrowser\Tools` in that folder. If these folders do not exist, create `TVBrowser` first, then `Tools` inside it.
+5. Rename the downloaded file to:
+
+   ```text
+   yt-dlp-2026.10.10.233141.exe
+   ```
+
+6. Place it in the `Tools` folder. The resulting file path must be:
+
+   ```text
+   %USERPROFILE%\AppData\LocalLow\NeuroMita Devs\NeuroMita\TVBrowser\Tools\yt-dlp-2026.10.10.233141.exe
+   ```
+
+7. Start NeuroMita and try searching for or opening a video again.
+
+**This method requires the exact version listed above.** The app verifies the file contents: downloading a different version and renaming it will not work. If Windows hides file extensions, enable them in File Explorer and make sure the name does not end in `.exe.exe`.
+
+If the download also stalls in your browser, try another network or a VPN with access to GitHub, then download the file again.
+
+These steps address yt-dlp installation errors. If a different message appears afterward, such as a request to sign in to YouTube or confirm that you are not a bot, save the new technical details: that is a separate issue.
+
+The version and filename above match the current downloader; check them against the downloader when updating this guide for future builds.
+
 ## The cloud model does not respond
 
 First check whether the preset is active and whether the API key and model fields are filled in correctly for the selected provider template.
@@ -89,6 +124,8 @@ If the local model works but responds very slowly, this is usually a CPU/GPU, VR
 2. Open **AI Hub** and check that the selected components and model are installed.
 3. Check the compute device: an incorrect CPU/CUDA/DML mode can make initialisation very slow or cause an error.
 4. During the first installation, wait for downloading and extraction to finish; do not close the app.
+
+Windows Defender or another antivirus can be one possible source of the problem: it may block or quarantine temporary files created while downloading and installing the model. Check Windows Protection history, and restore or allow a file only if the archive source is trusted. As a brief diagnostic step, you can temporarily disable real-time protection while downloading the model, then turn it back on immediately.
 
 See the [local voice guide](LocalVoiceInstallationEn.md). If the model does not start, include its name, the selected compute device, and the relevant installation log fragment.
 

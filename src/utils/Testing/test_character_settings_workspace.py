@@ -5,6 +5,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout
+from controllers.gui.character_settings_view_model import CharacterSettingsViewModel
 from ui.settings.character_settings.ui import build_character_settings_ui
 from controllers.gui.character_settings_logic import (
     _build_character_library, _select_character_settings, _filter_character_library,
@@ -29,22 +30,22 @@ class CharacterSettingsWorkspaceTest(unittest.TestCase):
 
     def test_library_selection_and_layout(self):
         window = QWidget()
-        build_character_settings_ui(window, QVBoxLayout(window))
+        build_character_settings_ui(window, QVBoxLayout(window), view_model=CharacterSettingsViewModel(window))
         self.assertEqual(window.btn_history_view.property("actionTitle"), "history_view")
         self.assertEqual(window.btn_maint_index_new.property("actionTitle"), "index_new")
         self.assertEqual(window.btn_maint_tags.property("actionTitle"), "tags")
         for name in ("history_view", "history_export", "history_import", "files_db", "tags",
                      "dedupe", "index_new", "reindex", "reset_history", "purge"):
             self.assertTrue(getattr(window, "btn_all_" + name).toolTip(), name)
-        window._active_character_id = "Crazy"
-        window._character_names = {"Crazy": "Crazy Mita", "Creepy": "Creepy Mita"}
+        window.character_settings_view_model.set_active_character("Crazy")
+        window.character_settings_view_model.set_character_names({"Crazy": "Crazy Mita", "Creepy": "Creepy Mita"})
         with patch("controllers.gui.character_settings_logic.change_character_actions") as load:
             _build_character_library(window, ["Crazy", "Creepy", "Ghost", "GameMaster"], "Crazy")
             self.assertEqual([window.character_library.item(i).text() for i in range(4)],
                              ["Crazy Mita", "Ghostly Mita", "Creepy Mita", "Game Master"])
             _select_character_settings(window, window.character_library.item(2))
-            self.assertEqual(window._configured_char_id, "Creepy")
-            self.assertEqual(window._active_character_id, "Crazy")
+            self.assertEqual(window.character_settings_view_model.state.selected_character_id, "Creepy")
+            self.assertEqual(window.character_settings_view_model.state.active_character_id, "Crazy")
             self.assertEqual(window.character_name.text(), "Creepy Mita")
             self.assertEqual(window.character_id_label.text(), "id: Creepy")
             load.assert_called_with(window, "Creepy")
@@ -91,7 +92,7 @@ class CharacterSettingsWorkspaceTest(unittest.TestCase):
         from ui.pages.settings.section_registry import SETTINGS_SECTION_SPECS
         spec = next(spec for spec in SETTINGS_SECTION_SPECS if spec.key == "characters")
         page = SettingsSectionPage(spec)
-        build_character_settings_ui(page, page.body_layout)
+        build_character_settings_ui(page, page.body_layout, view_model=CharacterSettingsViewModel(page))
         page.resize(1200, 850)
         page.show()
         self.app.processEvents()
@@ -102,7 +103,7 @@ class CharacterSettingsWorkspaceTest(unittest.TestCase):
         from controllers.gui.character_settings_logic import _set_character_provider_items, save_character_provider
         from presets.character_provider import provider_preset_id
         window = QWidget()
-        build_character_settings_ui(window, QVBoxLayout(window))
+        build_character_settings_ui(window, QVBoxLayout(window), view_model=CharacterSettingsViewModel(window))
         class Settings:
             values = {"CHAR_PROVIDER_Crazy": 102}
             def get(self, key, default=None):
@@ -110,7 +111,7 @@ class CharacterSettingsWorkspaceTest(unittest.TestCase):
             def set(self, key, value):
                 self.values[key] = value
         window.settings = Settings()
-        window._configured_char_id = "Crazy"
+        window.character_settings_view_model.select_character("Crazy")
         choices = [dict(id=101, name="Same", model="model-a", provider="google"),
                    dict(id=102, name="Same", model="model-b", provider="openrouter")]
         _set_character_provider_items(window, choices)

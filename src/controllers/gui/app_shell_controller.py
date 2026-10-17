@@ -26,7 +26,7 @@ from services.contracts import (
 )
 from utils import getTranslationVariant as _
 
-from .async_runner import run_async
+from .async_runner import dispatch_to_gui, run_async
 
 
 class AppShellController:
@@ -50,6 +50,9 @@ class AppShellController:
         self._main_controller = None
         self._backend_error = ""
         self._closed = False
+        self._history_cleared_subscription = self._event_bus.subscribe(
+            Events.Character.HISTORY_CLEARED, self._on_character_history_cleared, weak=False,
+        )
 
     @property
     def backend_ready(self) -> bool:
@@ -93,6 +96,7 @@ class AppShellController:
         if self._closed:
             return
         self._closed = True
+        self._history_cleared_subscription.close()
         controller = self._main_controller
         try:
             close_pages = self._close_pages
@@ -133,6 +137,20 @@ class AppShellController:
     def clear_chat(self) -> None:
         self._view.render_chat_cleared()
         self._event_bus.emit(Events.Chat.CLEAR_CHAT)
+
+    def _on_character_history_cleared(self, event) -> None:
+        data = event.data or {}
+        character_id = str(data.get("character_id") or "").strip()
+
+        def apply():
+            if self._closed:
+                return
+            if not data.get("all_characters") and character_id != self.current_character_id():
+                return
+            self.clear_chat()
+            self._view.update_debug_info()
+
+        dispatch_to_gui(self._view, apply)
 
     @staticmethod
     def _dedupe_images(image_list):

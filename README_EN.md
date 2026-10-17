@@ -1,4 +1,4 @@
-# NeuroMita 0.1 Alpha
+# NeuroMita 0.1.1 Alpha
 
 <p align="center">
   🌐 <a href="README.md">Русский</a> · <b>English</b>
@@ -7,7 +7,7 @@
 NeuroMita is a fan-made mod project where you can talk to Mitas controlled by language models and see their reactions in a Unity scene. The current version is a standalone Unity build: MiSide does not need to be installed, and the release includes everything required to run it.
 
 <p align="center">
-  <a href="https://github.com/VinerX/NeuroMita/releases"><img src="https://img.shields.io/badge/Download-0.1%20Alpha-6f42c1?style=for-the-badge&logo=github&logoColor=white" alt="Download NeuroMita"></a>
+  <a href="https://github.com/VinerX/NeuroMita/releases"><img src="https://img.shields.io/badge/Download-0.1.1%20Alpha-6f42c1?style=for-the-badge&logo=github&logoColor=white" alt="Download NeuroMita"></a>
   <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="docs/MODELS_EN.md"><img src="https://img.shields.io/badge/Set%20up%20a%20model-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Set up a model"></a>
   <a href="docs/TROUBLESHOOTING_EN.md"><img src="https://img.shields.io/badge/Troubleshooting-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Troubleshooting"></a>
@@ -44,6 +44,8 @@ After Unity starts, keep the NeuroMita launcher open: it maintains the connectio
 If network problems prevent the Unity download from completing, a [manual installation method](docs/TROUBLESHOOTING_EN.md#manual-unity-installation) is available.
 
 Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over an existing working NeuroMita folder.
+
+Detailed changelogs: [version history](docs/versions/README.md).
 
 ### Setting up the first chat
 
@@ -114,13 +116,15 @@ RAG can additionally find relevant fragments from history and memories, while th
 
 ## Join the team
 
-NeuroMita is developed by the community. We are currently looking for:
+NeuroMita is developed by the community. We are especially looking for contributors with practical experience who can independently find their way around an existing project and carry tasks through to a working result:
 
-- **Unity developers** — C#, gameplay mechanics, integration, and interactive scenes.
-- **Unity level designers** — filling out the game after mechanics are ready: building scenes, placing objects, lighting, triggers, and atmosphere.
-- **Python developers** — help with focused backend, AI integration, and stability tasks.
+- **Unity developers** — strong C# skills, gameplay mechanics and interactions, and character behavior.
+- **Game designers / Unity level designers** — creating engaging ways to spend time with Mita over extended play sessions: activities, interactive situations, and small gameplay scenarios that players want to return to. Experience bringing these ideas to life in Unity using the available mechanics is required.
+- **Python developers** — experience with backend development, external APIs, and asynchronous code; developing AI components, managing language model context — conversation history, memory, and game state — and improving stability.
 
-We also welcome **3D modelers and animators**. Their work comes up as focused tasks for particular scenes, characters, props, or reactions. If you would like to help, message VinerX in [Discord](https://discord.gg/Tu5MPFxM4P).
+**We are particularly looking for someone experienced in bringing animations from Blender into Unity and making them work correctly in-game**: rig preparation, export, retargeting, Animator setup, and fixing playback issues on game characters.
+
+We also welcome **3D modelers and animators** to work on specific scenes, characters, props, and reactions. If you would like to help, message VinerX in [Discord](https://discord.gg/Tu5MPFxM4P).
 
 ## Team and acknowledgements
 
@@ -176,7 +180,7 @@ We also welcome **3D modelers and animators**. Their work comes up as focused ta
 <summary><b>Testers</b></summary>
 ⠀
 
-- **Nazarlo** (`nazarlo`)
+- **Nazarlo** (`nazarlo`) — Special thanks.
 - **SuperAngel** (`superangel25`)
 - **#1 crazy Mita hater** (`valtiata`)
 - **Unaligneds** (`fiery_crotch_669`)
@@ -229,8 +233,10 @@ Thank you to **smarkloker**, author of New Story Mod, for cooperation and sharin
 
 ### Support the project
 
-[Boosty VinerX](https://boosty.to/vinerx)
+Your support helps cover higher-cost AI subscriptions used to develop NeuroMita and commission animations for the project.
 
+[Boosty VinerX](https://boosty.to/vinerx)
+[DonationAlerts reserve](https://dalink.to/vinerx)
 <details>
 <summary>Cryptocurrency addresses</summary>
 ⠀

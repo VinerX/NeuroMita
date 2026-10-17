@@ -16,7 +16,6 @@ from ui.pages.sandbox_presentation import (
     SandboxBudgetState,
     SandboxCharacterSelected,
     SandboxClearHistoryRequested,
-    SandboxHistoryCleared,
     SandboxLastRequestState,
     SandboxMemoryState,
     SandboxModelItem,
@@ -85,7 +84,8 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             (Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished),
             (Events.History.COMPRESSED, self._on_history_changed),
             (Events.Character.CURRENT_CHANGED, self._on_character_changed),
-            (Events.Character.RELOAD_DATA, self._on_character_changed),
+            (Events.Character.DATA_RELOADED, self._on_character_changed),
+            (Events.Character.HISTORY_CLEARED, self._on_character_changed),
             (Events.ApiPresets.PRESET_SAVED, self._on_presets_changed),
             (Events.ApiPresets.PRESET_DELETED, self._on_presets_changed),
             (Events.ApiPresets.PRESET_IMPORTED, self._on_presets_changed),
@@ -114,7 +114,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             self._set_setting(intent.key, intent.value)
             return
         if isinstance(intent, SandboxClearHistoryRequested):
-            self._clear_history()
+            self._clear_history(intent.character_id)
             return
         if isinstance(intent, SandboxOpenHistoryRequested):
             cid = str(intent.character_id or self.state.current_character_id).strip()
@@ -311,9 +311,6 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
         except Exception as exc:
             self.emit_effect(SandboxShowError("Character", format_exception(exc)))
             return
-        self._update(current_character_id=cid, prompt_items=(), current_prompt="")
-        self.refresh_selectors()
-        self.refresh_memory()
 
     def _set_setting(self, key: str, value: Any) -> None:
         normalized = str(key or "").strip()
@@ -334,14 +331,12 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             self._update(settings=self._freeze_mapping(current), error=format_exception(exc))
             self.emit_effect(SandboxShowError("Settings", format_exception(exc)))
 
-    def _clear_history(self) -> None:
+    def _clear_history(self, character_id: str) -> None:
         try:
-            self._controller.clear_current_history()
+            self._controller.clear_history(character_id)
         except Exception as exc:
             self.emit_effect(SandboxShowError("History", format_exception(exc)))
             return
-        self.emit_effect(SandboxHistoryCleared())
-        self.refresh_memory()
 
     def _on_setting_changed(self, change: Any) -> None:
         key = str(getattr(change, "key", "") or "")

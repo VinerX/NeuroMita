@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from services.release_catalog import build_release_manifest
+from services.release_revisions import release_tag_for_channel
 
 
 def _request_json(url: str, token: str):
@@ -96,7 +97,7 @@ def main() -> int:
     os.replace(temporary, args.output)
     _write_github_output(
         args.github_output,
-        stable_tag=str(manifest["channels"]["stable"]),
+        stable_tag=release_tag_for_channel(manifest, "stable"),
         release_count=len(manifest["releases"]),
     )
     print(

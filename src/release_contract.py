@@ -12,6 +12,7 @@ import zipfile
 from typing import Iterable, Optional
 
 from utils.release_assets import raw_release_has_launcher_assets
+from services.release_revisions import parse_build_version, python_archive_version
 
 
 SUPPORTED_ARCHIVE_EXTS = (".zip", ".7z")
@@ -171,6 +172,10 @@ def classify_asset_name(name: str, tag: str) -> str:
     escaped_tag = re.escape(tag)
     lowered = str(name or "").lower()
     if re.fullmatch(rf"PythonBuild-{escaped_tag}\.(zip|7z)", name, flags=re.IGNORECASE):
+        return PYTHON_FULL_KIND
+    parent = parse_build_version(tag)
+    version = python_archive_version(name)
+    if parent and version and parent.base_tag == version.base_tag and version > parent:
         return PYTHON_FULL_KIND
     if re.fullmatch(rf"PythonBuild-{escaped_tag}-Patch\.(zip|7z)", name, flags=re.IGNORECASE):
         return PYTHON_PATCH_KIND
