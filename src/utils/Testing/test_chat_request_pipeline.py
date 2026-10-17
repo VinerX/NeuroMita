@@ -496,6 +496,41 @@ class ChatRequestPipelineTests(unittest.TestCase):
         self.assertEqual(len(think_payloads), 1)
         self.assertEqual(think_payloads[0].get("message_id"), "out:thinking-task")
 
+    def test_streaming_preserves_final_thinking_without_duplicate_deltas(self):
+        for show_thinking in (False, True):
+            for stream_thinking, stream_answer in ((False, False), (True, False), (False, True), (True, True)):
+                with self.subTest(show=show_thinking, reasoning=stream_thinking, answer=stream_answer):
+                    generation = _ThinkingGeneration()
+                    generate = generation.generate_chat
+
+                    def generate_with_deltas(request):
+                        for sequence, (enabled, kind, text) in enumerate((
+                            (stream_thinking, LLMStreamEventType.REASONING_DELTA, "private reasoning"),
+                            (stream_answer, LLMStreamEventType.TEXT_DELTA, "visible answer"),
+                        )):
+                            if enabled:
+                                request.stream_event_callback(LLMStreamEvent(
+                                    type=kind, request_id="request", provider="gemini",
+                                    model="model", sequence=sequence, text=text,
+                                ))
+                        return generate(request)
+
+                    services().register(GenerationService, generation, replace=True)
+                    self.controller.settings = _StubSettings({
+                        "ENABLE_STREAMING": True, "SHOW_THINK_IN_GUI": show_thinking,
+                    })
+                    with patch.object(generation, "generate_chat", side_effect=generate_with_deltas), patch.object(
+                        self.bus, "emit", wraps=self.bus.emit,
+                    ) as emit:
+                        result = self.controller._run_request("hi", character_id="Crazy")
+                    self.assertEqual(result, "visible answer")
+                    chunks = [call.args[1] for call in emit.call_args_list
+                              if len(call.args) >= 2 and call.args[0] == Events.GUI.APPEND_STREAM_CHUNK_UI]
+                    reasoning = "".join(item["chunk"] for item in chunks if item["role"] == "think")
+                    answer = "".join(item["chunk"] for item in chunks if item["role"] == "assistant")
+                    self.assertEqual(reasoning, "private reasoning" if show_thinking else "")
+                    self.assertEqual(answer, "visible answer")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -139,4 +139,12 @@ def migrate_generation_settings(service, preset, dialect, settings=None):
             state["schema_override"] = custom
             state["values"]["thinking"] = value
             state["enabled"].append("thinking")
+    if (
+        dialect == "gemini_generate_content"
+        and thinking.get("include_thoughts")
+        and enabled_thinking is not False
+        and "include_thoughts" in state["values"]
+        and "include_thoughts" not in state["enabled"]
+    ):
+        state["enabled"].append("include_thoughts")
     return state

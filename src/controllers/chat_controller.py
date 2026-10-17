@@ -540,6 +540,8 @@ class ChatController(ChatService, GenerationActivityService):
         perf_mark(trace_id, "generation.worker_started")
         stream_id = str(task_uid or req_id or f"stream:{uuid.uuid4().hex}")
         stream_started = False
+        stream_thinking_started = False
+        stream_assistant_started = False
         stream_finished = False
         stream_current_role = None
         presentation_lock = threading.RLock()
@@ -585,7 +587,7 @@ class ChatController(ChatService, GenerationActivityService):
             stream_coalescer = TextDeltaCoalescer(append_stream_chunk) if is_streaming else None
 
             def on_think_chunk(think_chunk: str):
-                nonlocal stream_current_role, stream_started
+                nonlocal stream_current_role, stream_started, stream_thinking_started
                 if not think_chunk:
                     return
                 if stream_coalescer is None:
@@ -604,12 +606,13 @@ class ChatController(ChatService, GenerationActivityService):
                         }, delivery=EventDelivery.ORDERED)
                         stream_current_role = "think"
                         stream_started = True
+                    stream_thinking_started = True
                 stream_coalescer.push(think_chunk)
 
             stream_json_filter = StructuredJsonStreamFilter() if is_streaming else None
 
             def _emit_visible_assistant(text: str):
-                nonlocal stream_current_role, stream_started
+                nonlocal stream_current_role, stream_started, stream_assistant_started
                 if not text:
                     return
                 perf_mark_once(trace_id, "response.first_visible_text")
@@ -629,6 +632,7 @@ class ChatController(ChatService, GenerationActivityService):
                         }, delivery=EventDelivery.ORDERED)
                         stream_current_role = "assistant"
                         stream_started = True
+                    stream_assistant_started = True
                 stream_coalescer.push(text)
 
             def flush_stream_output() -> None:
@@ -955,7 +959,9 @@ class ChatController(ChatService, GenerationActivityService):
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
-                if not stream_started and response_text:
+                if show_think_in_gui and think_text and not stream_thinking_started:
+                    on_think_chunk(think_text.strip())
+                if not stream_assistant_started and response_text:
                     _emit_visible_assistant(response_text)
                 flush_stream_output()
 
