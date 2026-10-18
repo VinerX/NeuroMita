@@ -16,7 +16,7 @@ from core.voice_device_selection import device_half_precision_behavior
 from core.install_types import InstallAction, InstallPlan
 from core.installables.types import ComponentCategory, ComponentMetadata
 from installables.registry_builder import LazyInstallableRegistry
-from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec
+from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec, FishSpeechModel
 from services.installable_catalog_service import DefaultInstallableCatalogService
 from services.asr_settings_service import FileASRSettingsService
 
@@ -59,6 +59,23 @@ class _PreviewComponent:
 
 
 class InstallableCatalogServiceTests(unittest.TestCase):
+    def test_fish_plans_from_catalog_bind_saved_device_without_ui_payload(self):
+        service = DefaultInstallableCatalogService()
+        self.addCleanup(service.close)
+        for model_id, key in (("medium+", "device"), ("medium+low", "fsprvc_fsp_device")):
+            component = FishSpeechModel(SimpleNamespace(), model_id)
+            for operation in ("install", "initialize"):
+                with self.subTest(model_id=model_id, operation=operation), patch.object(
+                    service, "require_component", return_value=component
+                ), patch.object(service, "_component_context", return_value={}), patch.object(
+                    service, "_require_install_supported"
+                ), patch.object(FishSpeechInstallSpec, "is_installed", return_value=False), patch(
+                    "handlers.voice_models.fish_speech_model.load_voice_model_settings",
+                    return_value={key: "cuda:2", "fsprvc_rvc_device": "cuda:1"},
+                ), patch.object(FishSpeechInstallSpec, "_compile_call") as compile_call:
+                    service.build_operation_plan(f"tts:{model_id}", operation)
+                    self.assertEqual(compile_call.call_args.kwargs["device"], "cuda:2")
+
     def test_public_query_contract_has_no_caller_context(self):
         from services.contracts import InstallableCatalogService
 

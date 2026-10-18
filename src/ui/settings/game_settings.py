@@ -425,20 +425,6 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
             'type': 'text',
         },
         {
-            'label': _('Меню действий', 'Action menu'),
-            'key': 'ACTION_MENU',
-            'type': 'checkbutton',
-            'default_checkbutton': True,
-            'tooltip': _('Показывать меню действий в игре (Y)', 'Show action menu in game (Y)'),
-        },
-        {
-            'label': _('Меню выбора Мит', 'Mitas selection menu'),
-            'key': 'MITAS_MENU',
-            'type': 'checkbutton',
-            'default_checkbutton': False,
-            'tooltip': _('Показывать меню выбора персонажей Мит в игре', 'Show Mitas character selection menu in game'),
-        },
-        {
             'label': _('Дерево иерархии мира (устарело)', 'World hierarchy tree (outdated)'),
             'key': 'WORLD_HIERARCHY_TREE',
             'type': 'checkbutton',

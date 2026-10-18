@@ -46,6 +46,27 @@ class PresetModelSettingsTests(unittest.TestCase):
             "generationConfig": {"thinkingConfig": {"thinkingLevel": "low", "includeThoughts": False}, "temperature": 0.0},
         })
 
+    def test_google_defaults_request_thought_summaries_for_all_thinking_controls(self):
+        for identifier in ("google-level", "google-budget", "google-budget-pro", "google-budget-lite"):
+            with self.subTest(schema=identifier):
+                document = self.service.create(identifier)
+                config = self.service.compile(document, "gemini_generate_content")["generationConfig"]
+                self.assertIs(config["thinkingConfig"]["includeThoughts"], True)
+                document["values"]["include_thoughts"] = False
+                preset = {"model_settings": document}
+                resolved = self.service.for_preset(preset, "gemini_generate_content", {})
+                config = self.service.compile(resolved, "gemini_generate_content")["generationConfig"]
+                self.assertIs(config["thinkingConfig"]["includeThoughts"], False)
+
+    def test_google_legacy_migration_requests_summaries_by_default(self):
+        preset = deepcopy(next(p for p in API_TEMPLATES_DATA if p["id"] == 3))
+        for model in ("gemini-3.7-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"):
+            with self.subTest(model=model):
+                preset["default_model"] = model
+                document = self.service.for_preset(preset, "gemini_generate_content", {})
+                config = self.service.compile(document, "gemini_generate_content")["generationConfig"]
+                self.assertIs(config["thinkingConfig"]["includeThoughts"], True)
+
     def test_budget_constraints_distinguish_disabled_dynamic_and_positive(self):
         for identifier, value, valid in [
             ("google-budget", 0, True), ("google-budget", -1, True),
