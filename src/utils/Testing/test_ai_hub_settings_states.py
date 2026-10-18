@@ -209,6 +209,46 @@ class SettingsViewModelStateTests(unittest.TestCase):
         self.assertFalse(self.vm.state.catalog_loading)
         self.assertEqual(self.vm.state.selected_component_id, "")
 
+    def test_compile_buttons_forward_fish_device_and_allow_saved_setting_resolution(self):
+        from unittest.mock import Mock
+        from ui.windows.ai_hub.settings_presentation import CompileAIHubModel, DeleteAIHubModelCompilation
+
+        for component, values, expected in (
+            ("tts:medium+", {"device": "cuda:2"}, "cuda:2"),
+            ("tts:medium+low", {"fsprvc_fsp_device": "cuda:2", "fsprvc_rvc_device": "cuda:1"}, "cuda:2"),
+            ("tts:medium+", {}, None),
+            ("tts:medium+low", {}, None),
+        ):
+            with self.subTest(component=component, values=values):
+                self.vm.update_state(selected_component_id=component, compile_busy=False)
+                self.vm._catalog = SimpleNamespace(
+                    save_settings=Mock(return_value={"ok": True}),
+                    compile_model=Mock(return_value=True),
+                )
+                self.vm._application = SimpleNamespace(
+                    ensure_feature_async=lambda _name: SimpleNamespace(result=lambda **_kwargs: None),
+                    ensure_optional_gui=lambda _name: None,
+                )
+
+                def execute(_key, work, success, failure):
+                    success(work())
+                    return True
+
+                with patch.object(self.vm, "run_exclusive", side_effect=execute):
+                    self.vm.dispatch(CompileAIHubModel(immutable_payload(values)))
+                self.vm._catalog.compile_model.assert_called_once_with(
+                    component, clear_only=False, device=expected
+                )
+                self.vm.update_state(compile_busy=False)
+                self.vm._catalog.compile_model.reset_mock()
+                self.vm._catalog.save_settings.reset_mock()
+                with patch.object(self.vm, "run_exclusive", side_effect=execute):
+                    self.vm.dispatch(DeleteAIHubModelCompilation())
+                self.vm._catalog.compile_model.assert_called_once_with(
+                    component, clear_only=True, device=None
+                )
+                self.vm._catalog.save_settings.assert_not_called()
+
     def test_model_loading_discards_previous_form_and_exposes_failure(self):
         self.vm.update_state(schema=immutable_payload([{"key": "old"}]), compile_available=True)
         with patch.object(self.vm, "run_latest", return_value=True) as loader:

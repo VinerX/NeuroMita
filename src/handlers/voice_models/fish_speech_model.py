@@ -10,7 +10,7 @@ import subprocess
 from contextlib import nullcontext
 from typing import Optional, Any, List, Dict
 
-from .base_model import IVoiceModel
+from .base_model import IVoiceModel, load_voice_model_settings
 from main_logger import logger
 
 from core.app_paths import base_dir, checkpoints_dir
@@ -188,6 +188,27 @@ class FishSpeechInstallSpec:
             clear(process)
 
     @classmethod
+    def compilation_device(cls, model_id: str, device: str | None = None) -> str:
+        if model_id not in ("medium+", "medium+low"):
+            raise ValueError(f"Compilation is not supported for voice model '{model_id}'")
+        selected = str(device or "").strip().lower()
+        if not selected:
+            settings = FishSpeechModel.resolve_settings_for_model(
+                model_id, load_voice_model_settings(model_id)
+            )
+            key = "fsprvc_fsp_device" if model_id == "medium+low" else "device"
+            selected = str(settings.get(key) or "").strip().lower()
+        if selected == "cuda":
+            selected = "cuda:0"
+        ordinal = selected[5:]
+        if not selected.startswith("cuda:") or not ordinal.isascii() or not ordinal.isdigit():
+            raise ValueError(
+                f"Fish Speech+ compilation requires a selected CUDA device: "
+                f"model={model_id}, value={selected!r}"
+            )
+        return f"cuda:{int(ordinal)}"
+
+    @classmethod
     def _compile_call(
         cls,
         *,
@@ -349,6 +370,10 @@ class FishSpeechInstallSpec:
             )
 
         actions: list[InstallAction] = []
+        compile_device = (
+            cls.compilation_device(mid, ctx.get("device"))
+            if mid in ("medium+", "medium+low") else None
+        )
 
         pkgs = [
             "fish-speech-lib",
@@ -416,7 +441,7 @@ class FishSpeechInstallSpec:
                     type="call",
                     description=_("Настройка компиляции Fish Speech+...", "Configuring Fish Speech+ compilation..."),
                     progress=88,
-                    fn=cls._compile_call(device=ctx.get("device"), optional=True),
+                    fn=cls._compile_call(device=compile_device, optional=True),
                 )
             )
 
@@ -666,7 +691,12 @@ class FishSpeechModel(IVoiceModel):
         if self.model_id not in ("medium+", "medium+low"):
             return None
         mode = str(run_ctx.get("initialize_mode") or "compile")
+        if mode not in ("compile", "clear_cache"):
+            raise ValueError(f"Unsupported Fish Speech+ initialization mode: {mode}")
         clear_only = mode == "clear_cache"
+        device = None if clear_only else FishSpeechInstallSpec.compilation_device(
+            self.model_id, run_ctx.get("device")
+        )
         return InstallPlan(
             actions=[
                 InstallAction(
@@ -678,7 +708,7 @@ class FishSpeechModel(IVoiceModel):
                     ),
                     progress=20 if clear_only else 10,
                     fn=FishSpeechInstallSpec._compile_call(
-                        device=run_ctx.get("device"),
+                        device=device,
                         clear_only=clear_only,
                     ),
                 )
