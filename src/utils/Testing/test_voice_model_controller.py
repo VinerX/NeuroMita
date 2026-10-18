@@ -483,18 +483,18 @@ class VoiceModelControllerTests(unittest.TestCase):
 
         registry = SimpleNamespace(get_optional=lambda _contract: _Operations())
         with patch("controllers.voice_model_controller.services", return_value=registry), patch(
-            "handlers.voice_models.base_model.load_voice_model_settings",
+            "handlers.voice_models.fish_speech_model.load_voice_model_settings",
             return_value={"fsprvc_fsp_device": "cuda:2"},
         ):
             self.assertTrue(controller.start_compile("medium+low", with_ui=False))
 
         self.assertEqual(seen["device"], "cuda:2")
 
-    def test_fish_compile_rejects_missing_device_instead_of_using_cuda_zero(self):
+    def test_fish_compile_rejects_saved_non_cuda_device(self):
         controller = VoiceModelController.__new__(VoiceModelController)
         with patch(
-            "handlers.voice_models.base_model.load_voice_model_settings",
-            return_value={},
+            "handlers.voice_models.fish_speech_model.load_voice_model_settings",
+            return_value={"device": "cpu"},
         ):
             self.assertFalse(controller.start_compile("medium+", with_ui=False))
 
@@ -516,74 +516,24 @@ class VoiceModelControllerTests(unittest.TestCase):
         self.assertFalse(make_compile_step.call_args.kwargs["clear_only"])
         self.assertNotIn("clear_cache", make_compile_step.call_args.kwargs)
 
-    def test_fish_install_uses_selected_cuda_device(self):
-        controller = VoiceModelController.__new__(VoiceModelController)
-        controller._lock = threading.RLock()
-        controller.local_voice_models = [{
-            "id": "medium+",
-            "settings": [{"key": "device", "options": {"default": "cuda:1"}}],
-        }]
-        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
-        seen = {}
-
-        class _Operations:
-            @staticmethod
-            def install(payload):
-                seen.update(payload)
-                return SimpleNamespace(accepted=True)
-
-        catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
-        registry = SimpleNamespace(
-            get=lambda _contract: catalog,
-            get_optional=lambda _contract: _Operations(),
-        )
-        with patch("controllers.voice_model_controller.services", return_value=registry):
-            self.assertTrue(controller.start_install("medium+", with_ui=False))
-
-        self.assertEqual(seen["device"], "cuda:1")
-
-    def test_fish_rvc_install_uses_fish_device_not_rvc_device(self):
-        controller = VoiceModelController.__new__(VoiceModelController)
-        controller._lock = threading.RLock()
-        controller.local_voice_models = [{
-            "id": "medium+low",
-            "settings": [
-                {"key": "fsprvc_fsp_device", "options": {"default": "cuda:1"}},
-                {"key": "fsprvc_rvc_device", "options": {"default": "cuda:0"}},
-            ],
-        }]
-        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
-        seen = {}
-
-        class _Operations:
-            @staticmethod
-            def install(payload):
-                seen.update(payload)
-                return SimpleNamespace(accepted=True)
-
-        catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
-        registry = SimpleNamespace(
-            get=lambda _contract: catalog,
-            get_optional=lambda _contract: _Operations(),
-        )
-        with patch("controllers.voice_model_controller.services", return_value=registry):
-            self.assertTrue(controller.start_install("medium+low", with_ui=False))
-
-        self.assertEqual(seen["device"], "cuda:1")
-
-    def test_selected_fish_device_uses_effective_model_setting(self):
-        controller = VoiceModelController.__new__(VoiceModelController)
-        controller._lock = threading.RLock()
-        controller.local_voice_models = [
-            {"id": "medium+", "settings": [{"key": "device", "options": {"default": "cuda:1"}}]},
-            {"id": "medium+low", "settings": [
-                {"key": "fsprvc_fsp_device", "options": {"default": "cuda:1"}},
-                {"key": "fsprvc_rvc_device", "options": {"default": "cuda:0"}},
-            ]},
-        ]
-
-        self.assertEqual(controller._selected_fish_device("medium+"), "cuda:1")
-        self.assertEqual(controller._selected_fish_device("medium+low"), "cuda:1")
+    def test_fish_install_leaves_device_resolution_to_operation_plan(self):
+        for model_id in ("medium+", "medium+low"):
+            with self.subTest(model_id=model_id):
+                controller = VoiceModelController.__new__(VoiceModelController)
+                controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+                seen = {}
+                operations = SimpleNamespace(
+                    install=lambda payload: (seen.update(payload) or SimpleNamespace(accepted=True))
+                )
+                catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
+                registry = SimpleNamespace(
+                    get=lambda _contract: catalog,
+                    get_optional=lambda _contract: operations,
+                )
+                with patch("controllers.voice_model_controller.services", return_value=registry):
+                    self.assertTrue(controller.start_install(model_id, with_ui=False))
+                self.assertEqual(seen["component_id"], f"tts:{model_id}")
+                self.assertNotIn("device", seen)
 
     def test_onnx_voice_model_is_supported_but_warned_on_nvidia(self):
         controller = self._make_controller_stub()

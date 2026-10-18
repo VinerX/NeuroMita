@@ -15,6 +15,76 @@ from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec, FishS
 
 
 class FishSpeechInstallablesTests(unittest.TestCase):
+    def test_install_and_compile_plans_resolve_saved_fish_device_without_ui_context(self):
+        for mode, key in (("medium+", "device"), ("medium+low", "fsprvc_fsp_device")):
+            with self.subTest(mode=mode), patch(
+                "handlers.voice_models.fish_speech_model.load_voice_model_settings",
+                return_value={key: "cuda:2", "fsprvc_rvc_device": "cuda:1"},
+            ), patch.object(FishSpeechInstallSpec, "is_installed", return_value=False), patch.object(
+                FishSpeechInstallSpec, "_compile_call", return_value=lambda **_kwargs: True
+            ) as compile_call:
+                FishSpeechInstallSpec.build_install_plan(mode, {})
+                self.assertEqual(compile_call.call_args.kwargs["device"], "cuda:2")
+                self.assertTrue(compile_call.call_args.kwargs["optional"])
+                model = FishSpeechModel(SimpleNamespace(), mode)
+                model.build_initialize_plan({})
+                self.assertEqual(compile_call.call_args.kwargs["device"], "cuda:2")
+
+    def test_new_install_uses_schema_default_and_normalizes_cuda_alias(self):
+        for mode in ("medium+", "medium+low"):
+            with self.subTest(mode=mode), patch(
+                "handlers.voice_models.fish_speech_model.load_voice_model_settings", return_value={}
+            ), patch.object(FishSpeechInstallSpec, "is_installed", return_value=False), patch.object(
+                FishSpeechInstallSpec, "_compile_call", return_value=lambda **_kwargs: True
+            ) as compile_call:
+                FishSpeechInstallSpec.build_install_plan(mode, {})
+                self.assertEqual(compile_call.call_args.kwargs["device"], "cuda:0")
+
+    def test_explicit_device_overrides_saved_device_and_is_bound_when_plan_is_built(self):
+        for mode in ("medium+", "medium+low"):
+            with self.subTest(mode=mode), patch(
+                "handlers.voice_models.fish_speech_model.load_voice_model_settings",
+                side_effect=AssertionError("An explicit device must not read saved settings"),
+            ), patch.object(FishSpeechInstallSpec, "is_installed", return_value=False), patch.object(
+                FishSpeechInstallSpec, "_compile_call", return_value=lambda **_kwargs: True
+            ) as compile_call:
+                ctx = {"device": "cuda:3"}
+                FishSpeechInstallSpec.build_install_plan(mode, ctx)
+                ctx["device"] = "cuda:0"
+                self.assertEqual(compile_call.call_args.kwargs["device"], "cuda:3")
+                model = FishSpeechModel(SimpleNamespace(), mode)
+                model.build_initialize_plan({"device": "cuda:3"})
+                self.assertEqual(compile_call.call_args.kwargs["device"], "cuda:3")
+
+    def test_compile_plan_rejects_invalid_device_before_execution(self):
+        for mode in ("medium+", "medium+low"):
+            for device in ("cpu", "dml", "cuda:-1", "cuda:abc", "cuda:١"):
+                with self.subTest(mode=mode, device=device), patch.object(
+                    FishSpeechInstallSpec, "is_installed", return_value=False
+                ):
+                    with self.assertRaisesRegex(ValueError, "requires a selected CUDA device"):
+                        FishSpeechInstallSpec.build_install_plan(mode, {"device": device})
+                    model = FishSpeechModel(SimpleNamespace(), mode)
+                    with self.assertRaisesRegex(ValueError, "requires a selected CUDA device"):
+                        model.build_initialize_plan({"device": device})
+
+    def test_cache_clear_does_not_require_a_cuda_device_or_saved_settings(self):
+        for mode in ("medium+", "medium+low"):
+            with self.subTest(mode=mode), patch(
+                "handlers.voice_models.fish_speech_model.load_voice_model_settings",
+                side_effect=AssertionError("Clearing caches must not resolve a CUDA device"),
+            ), patch.object(FishSpeechInstallSpec, "_compile_call") as compile_call:
+                FishSpeechModel(SimpleNamespace(), mode).build_initialize_plan(
+                    {"initialize_mode": "clear_cache"}
+                )
+                self.assertTrue(compile_call.call_args.kwargs["clear_only"])
+                self.assertIsNone(compile_call.call_args.kwargs["device"])
+
+    def test_unknown_initialize_mode_cannot_start_compilation(self):
+        model = FishSpeechModel(SimpleNamespace(), "medium+")
+        with self.assertRaisesRegex(ValueError, "initialization mode"):
+            model.build_initialize_plan({"initialize_mode": "typo"})
+
     def test_both_plus_models_use_selected_device_cache_during_initialization_and_generation(self):
         for mode, device_key in (("medium+", "device"), ("medium+low", "fsprvc_fsp_device")):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root, patch.dict(

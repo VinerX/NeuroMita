@@ -837,36 +837,8 @@ class VoiceModelController(VoiceModelService):
             "with_ui": bool(with_ui),
             "meta": {"kind": "voice", "item_id": mid, "op": "install"},
         }
-        if mid in ("medium+", "medium+low"):
-            payload["device"] = self._selected_fish_device(mid)
         admission = operations.install(payload)
         return bool(admission.accepted)
-
-    def _selected_fish_device(self, model_id: str) -> str:
-        mid = str(model_id or "").strip()
-        device_key = "fsprvc_fsp_device" if mid == "medium+low" else "device"
-        with self._lock:
-            model = next(
-                (item for item in self.local_voice_models if str(item.get("id") or "") == mid),
-                None,
-            )
-            setting = next(
-                (
-                    item
-                    for item in (model.get("settings") or [])
-                    if str(item.get("key") or "") == device_key
-                ),
-                None,
-            ) if isinstance(model, dict) else None
-            options = setting.get("options") if isinstance(setting, dict) else None
-            selected = options.get("default") if isinstance(options, dict) else None
-        selected_device = str(selected or "").strip()
-        if selected_device:
-            return selected_device
-        logger.warning(
-            f"Fish Speech compile device is unavailable for '{mid}', falling back to cuda:0"
-        )
-        return "cuda:0"
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
@@ -913,21 +885,13 @@ class VoiceModelController(VoiceModelService):
             return False
         selected_device = None
         if not clear_only:
-            from handlers.voice_models.base_model import load_voice_model_settings
+            from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec
 
-            device_key = "fsprvc_fsp_device" if mid == "medium+low" else "device"
-            raw_device = str(
-                device if device is not None else load_voice_model_settings(mid).get(device_key) or ""
-            ).strip().lower()
-            if raw_device == "cuda":
-                raw_device = "cuda:0"
-            if not raw_device.startswith("cuda:") or not raw_device[5:].isdigit():
-                logger.error(
-                    f"Fish Speech+ compilation requires a selected CUDA device: "
-                    f"model={mid}, value={raw_device!r}"
-                )
+            try:
+                selected_device = FishSpeechInstallSpec.compilation_device(mid, device)
+            except ValueError as exc:
+                logger.error(str(exc))
                 return False
-            selected_device = f"cuda:{int(raw_device[5:])}"
         operations = services().get_optional(InstallableOperationsService)
         if operations is None:
             runtime = services().get_optional(RuntimeFeatureService)

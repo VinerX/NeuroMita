@@ -132,8 +132,6 @@ class ServerController:
         self._destroyed = False
 
         self.settings_to_send = [
-            "ACTION_MENU",
-            "MITAS_MENU",
             "IGNORE_GAME_REQUESTS",
             "GAME_BLOCK_LEVEL",
             "MIC_INSTANT_SENT",

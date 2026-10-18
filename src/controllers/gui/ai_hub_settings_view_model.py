@@ -273,7 +273,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 self._catalog.compile_model(
                     component_id,
                     clear_only=clear_only,
-                    device=None if clear_only else compile_device,
+                    device=None if clear_only or not compile_device else compile_device,
                 )
             )
             if accepted:
