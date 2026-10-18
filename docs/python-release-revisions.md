@@ -5,21 +5,33 @@
 archive in that same release. They do not create another GitHub release or tag,
 change its title, notes, publication date, or Latest status, or replace Unity.
 
-## Initial deployment to Atm4x/NeuroMita
+## Deploying the workflows
 
-1. Apply the `release-manifest.yml` checkout change to the default branch (`main`).
-   Its scheduled and release-event runs must check out `releases` for tooling.
-   This is a separate deployment requirement: merging only into `releases` does
-   not change a workflow that GitHub starts from `main`.
-2. Merge the revision implementation into `releases`. The prepared
-   `src/_version.py` is `2026.10.15.1`; the usual push trigger builds it.
-3. Inspect the build and manifest jobs before declaring the revision available.
+The manifest workflow checks out tooling from `releases` in Atm4x/NeuroMita and
+from the default branch in VinerX/NeuroMita. Deploy the revision implementation
+to that branch before publishing a revision. All writers share the manifest
+concurrency group; the build publishes its manifest directly, without calling
+a second workflow while holding that group.
 
-The runner change is intentionally independent of the Python changes and can be
-cherry-picked into `main`. In other repositories the runner keeps using their
-default branch. All publication and manifest rebuilds share the same concurrency
-group; the build publishes its manifest directly, without calling a second
-workflow while holding that group.
+Editing an existing release starts the workflow stored in its tag. Updating
+`main` alone does not update that historical workflow: an old checkout without
+an explicit tooling branch can still regenerate a catalog without revisions.
+
+For the mutable VinerX release `v2026.10.15`, the agreed migration is to create a
+commit on top of the original tagged commit that changes only the manifest
+workflow's checkout to the current tooling branch, then move the existing tag
+to that commit. Push the current generator to `main` first. Preserve the release
+record, tag name, asset names and assets. Release and asset URLs stay the same;
+source archives and source links under the moved tag now refer to the patched
+commit. Developers with an existing local copy of the tag must explicitly
+force-fetch that tag if they need its new target.
+
+Finish or cancel old manifest runs before the move, then rebuild the manifest
+from `main`. Rerunning an old Actions run retains its original commit and
+workflow, so start a fresh run instead. Do not rerun historical jobs using the
+unpatched checkout. Future release edits use the patched tag and current
+generator; no additional reconciliation workflow is needed. A tag move does
+not change the Python version embedded in an already published ZIP.
 
 ## Subsequent revisions
 
