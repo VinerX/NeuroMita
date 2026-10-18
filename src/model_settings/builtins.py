@@ -68,7 +68,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
     "google-budget-lite": {
         "schema_version": 1,
         "id": "google-budget-lite",
-        "revision": 1,
+        "revision": 2,
         "title": {
             "ru": "Google: thinkingBudget (512–24576; 0; -1)",
             "de": "Google: thinkingBudget (512–24576; 0; -1)",
@@ -491,8 +491,8 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "includeThoughts"
                 ],
                 "type": "boolean",
-                "default": False,
-                "enabled_by_default": False
+                "default": True,
+                "enabled_by_default": True
             }
         ],
         "documentation_url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
@@ -500,7 +500,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
     "google-budget-pro": {
         "schema_version": 1,
         "id": "google-budget-pro",
-        "revision": 1,
+        "revision": 2,
         "title": {
             "ru": "Google: thinkingBudget (128–32768; -1)",
             "de": "Google: thinkingBudget (128–32768; -1)",
@@ -922,8 +922,8 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "includeThoughts"
                 ],
                 "type": "boolean",
-                "default": False,
-                "enabled_by_default": False
+                "default": True,
+                "enabled_by_default": True
             }
         ],
         "documentation_url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
@@ -931,7 +931,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
     "google-budget": {
         "schema_version": 1,
         "id": "google-budget",
-        "revision": 1,
+        "revision": 2,
         "title": {
             "ru": "Google: thinkingBudget",
             "de": "Google: thinkingBudget",
@@ -1353,8 +1353,8 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "includeThoughts"
                 ],
                 "type": "boolean",
-                "default": False,
-                "enabled_by_default": False
+                "default": True,
+                "enabled_by_default": True
             }
         ],
         "documentation_url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
@@ -1362,7 +1362,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
     "google-level": {
         "schema_version": 1,
         "id": "google-level",
-        "revision": 1,
+        "revision": 2,
         "title": {
             "ru": "Google Gemini API",
             "de": "Google Gemini API",
@@ -1819,8 +1819,8 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
                     "includeThoughts"
                 ],
                 "type": "boolean",
-                "default": False,
-                "enabled_by_default": False
+                "default": True,
+                "enabled_by_default": True
             }
         ],
         "documentation_url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
