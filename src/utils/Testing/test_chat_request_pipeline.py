@@ -363,18 +363,65 @@ class ChatRequestPipelineTests(unittest.TestCase):
         services().register(GenerationService, _HiddenGameMasterGeneration(), replace=True)
         self.controller.settings = _StubSettings({"GM_ALLOW_ROUTING": True})
 
+        for event_type in ("game_master_observe", "game_master_command"):
+            with self.subTest(event_type=event_type):
+                with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
+                    result = self.controller._run_request(
+                        "",
+                        character_id="GameMaster",
+                        event_type=event_type,
+                        task_uid="hidden-gm-task",
+                        policy={"echo_to_ui": True, "allow_streaming": True, "write_to_history": True},
+                    )
+
+                self.assertEqual(result, "")
+                emitted_events = [call.args[0] for call in emit.call_args_list if call.args]
+                self.assertNotIn(Events.GUI.UPDATE_CHAT_UI, emitted_events)
+                self.assertNotIn(Events.Model.ON_FAILED_RESPONSE, emitted_events)
+                self.assertNotIn(Events.Audio.VOICEOVER_REQUESTED, emitted_events)
+                completed = next(
+                    call.args[1] for call in emit.call_args_list
+                    if len(call.args) >= 2 and call.args[0] == Events.Task.UPDATE_TASK_STATUS
+                    and call.args[1].get("status") == TaskStatus.SUCCESS
+                )
+                self.assertEqual(completed["result"]["response"], " ")
+
+    def test_hidden_game_master_keeps_broadcast_in_transport_result(self):
+        instruction = "Ask both Mitas to describe the room."
+        generation = _HiddenGameMasterGeneration()
+        generation.generate_chat = lambda request: ChatGenerationResult(
+            text="", character_id="GameMaster", structured={"segments": [{
+                "text": " ", "intents": [{
+                    "type": "dialogue.broadcast_system_message", "payload": {"message": instruction},
+                }],
+            }]}, structured_parse_level="direct", control_plane_trusted=True,
+        )
+        services().register(GenerationService, generation, replace=True)
         with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
             result = self.controller._run_request(
-                "",
-                character_id="GameMaster",
-                event_type="game_master_observe",
-                policy={"echo_to_ui": True, "allow_streaming": True, "write_to_history": True},
+                "", character_id="GameMaster", event_type="game_master_command",
+                task_uid="gm-broadcast-task",
             )
-
         self.assertEqual(result, "")
-        emitted_events = [call.args[0] for call in emit.call_args_list if call.args]
-        self.assertNotIn(Events.GUI.UPDATE_CHAT_UI, emitted_events)
-        self.assertNotIn(Events.Model.ON_FAILED_RESPONSE, emitted_events)
+        completed = next(
+            call.args[1] for call in emit.call_args_list
+            if len(call.args) >= 2 and call.args[0] == Events.Task.UPDATE_TASK_STATUS
+            and call.args[1].get("status") == TaskStatus.SUCCESS
+        )
+        self.assertEqual(completed["result"]["response"], " ")
+        intents = [intent for segment in completed["result"]["segments"] for intent in segment["intents"]]
+        self.assertIn({"type": "dialogue.broadcast_system_message", "payload": {"message": instruction}}, intents)
+
+    def test_empty_regular_character_result_still_fails(self):
+        generation = _ImmediateGeneration()
+        generation.generate_chat = lambda request: ChatGenerationResult(text="", character_id="Crazy")
+        services().register(GenerationService, generation, replace=True)
+        with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
+            result = self.controller._run_request("hi", character_id="Crazy", task_uid="empty-task")
+        self.assertIsNone(result)
+        self.assertTrue(any(
+            call.args[0] == Events.Model.ON_FAILED_RESPONSE for call in emit.call_args_list if call.args
+        ))
 
     def test_task_result_keeps_response_protocol_version(self):
         result = ChatController._build_task_result(

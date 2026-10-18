@@ -798,12 +798,6 @@ class ChatController(ChatService, GenerationActivityService):
                     structured_data = {"segments": []}
                     control_plane_trusted = True
 
-                # A hidden moderator may legitimately emit only a structured
-                # broadcast intent. Keep a whitespace transport placeholder so
-                # the intent reaches Unity instead of being rejected as an
-                # empty natural-language response.
-                if not response_text and isinstance(structured_data, dict):
-                    response_text = " "
                 if isinstance(structured_data, dict):
                     structured_data = dict(structured_data)
                     # A task configured by the user is trusted control-plane input.
@@ -872,7 +866,13 @@ class ChatController(ChatService, GenerationActivityService):
                             "type": "dialogue.broadcast_system_message",
                             "payload": {"message": explicit_instruction},
                         })
-            if not response_text:
+            structured_game_master_result = (
+                str(effective_character_id or "").strip() == "GameMaster"
+                and isinstance(structured_data, dict)
+            )
+            if structured_game_master_result and not str(response_text or "").strip():
+                response_text = ""
+            if not response_text and not structured_game_master_result:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
                 error_details = getattr(result, "error_details", None)
                 if task_uid:
@@ -896,6 +896,7 @@ class ChatController(ChatService, GenerationActivityService):
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, failed_event)
                 return None
 
+            task_response_text = " " if structured_game_master_result and not response_text else response_text
             effective_character_name = self._resolve_character_name(effective_character_id)
 
             if is_streaming and eff_policy.echo_to_ui:
@@ -918,7 +919,7 @@ class ChatController(ChatService, GenerationActivityService):
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                                "result": self._build_task_result(task_response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -941,21 +942,21 @@ class ChatController(ChatService, GenerationActivityService):
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                                "result": self._build_task_result(task_response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                            "result": self._build_task_result(task_response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                        "result": self._build_task_result(task_response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
