@@ -231,14 +231,18 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                     if parts
                     else _("Обновлений нет.", "No updates available.")
                 )
+                if self.state.error:
+                    text = self.state.error
                 self._set_progress(text, 100, 100, busy=False)
                 self._schedule_hide_progress()
 
         def failed(error: Exception) -> None:
-            self.update_state(update_checking=False, error=format_exception(error))
+            logger.warning("Home update check failed: %s", format_exception(error))
+            message = _("Не удалось проверить обновления", "Could not check for updates")
+            self.update_state(update_checking=False, error=message)
             if show_result:
                 self._set_progress(
-                    _("Ошибка проверки: {err}", "Check error: {err}").format(err=format_exception(error)),
+                    message,
                     0,
                     0,
                     busy=False,
@@ -327,13 +331,25 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         py_info: dict[str, Any] | None,
         unity_info: dict[str, Any] | None,
     ) -> None:
-        py_available = bool((py_info or {}).get("available")) and not self._pending_restart()
-        unity_available = bool((unity_info or {}).get("available"))
+        py_info = py_info or {}
+        unity_info = unity_info or {}
+        failed_components = []
+        for component, info in (("Python", py_info), ("Unity", unity_info)):
+            if not info.get("ok"):
+                failed_components.append(component)
+                logger.warning("Home %s update check failed: %s", component,
+                               info.get("error") or "Missing update check result")
+        error = (
+            _("Не удалось проверить обновления", "Could not check for updates")
+            if failed_components else None
+        )
+        py_available = bool(py_info.get("available")) and not self._pending_restart()
+        unity_available = bool(unity_info.get("available"))
         publish_update = getattr(self._app, "publish_python_update", None)
-        if callable(publish_update):
+        if py_info.get("ok") and callable(publish_update):
             publish_update(
-                available=bool((py_info or {}).get("available")),
-                version=str((py_info or {}).get("latest_version") or ""),
+                available=bool(py_info.get("available")),
+                version=str(py_info.get("latest_version") or ""),
             )
         previous_py = self.state.python_update
         previous_unity = self.state.unity_update
@@ -341,18 +357,18 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             python_update=HomeUpdateState(
                 available=py_available,
                 selected=py_available and previous_py.available and previous_py.selected,
-                latest_version=str((py_info or {}).get("latest_version") or ""),
-            ),
+                latest_version=str(py_info.get("latest_version") or ""),
+            ) if py_info.get("ok") else previous_py,
             unity_update=HomeUpdateState(
                 available=unity_available,
                 installable=not self.state.unity_installed,
                 selected=(unity_available or not self.state.unity_installed)
                 and (previous_unity.available or previous_unity.installable)
                 and previous_unity.selected,
-                latest_version=str((unity_info or {}).get("latest_version") or ""),
-            ),
+                latest_version=str(unity_info.get("latest_version") or ""),
+            ) if unity_info.get("ok") else previous_unity,
             update_checking=False,
-            error=None,
+            error=error,
         )
         self._refresh_local_state()
 
